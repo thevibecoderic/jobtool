@@ -350,48 +350,64 @@ def build_docx(tailored_text):
     return buf
 
 
+def _wrap_long_words(text, max_chars=80):
+    import textwrap
+    parts = []
+    for word in text.split(' '):
+        if len(word) > max_chars:
+            parts.append(' '.join(textwrap.wrap(word, max_chars)))
+        else:
+            parts.append(word)
+    return ' '.join(parts)
+
+
 def _sanitize(text):
     """Strip or replace characters that Helvetica can't render."""
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
 def build_pdf(tailored_text):
-    """Build a clean PDF resume using fpdf2."""
-    from fpdf import FPDF
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
+    """Build a clean PDF resume using fpdf2. Returns BytesIO or None on failure."""
+    try:
+        from fpdf import FPDF
+        pdf = FPDF()
+        pdf.add_page()
+        pdf.set_auto_page_break(auto=True, margin=15)
+        pw = pdf.w - 2 * pdf.l_margin
 
-    lines = tailored_text.split('\n')
-    for line in lines:
-        line = _sanitize(line.strip())
-        if not line:
-            pdf.ln(3)
-            continue
+        lines = tailored_text.split('\n')
+        for line in lines:
+            line = _sanitize(line.strip())
+            if not line:
+                pdf.ln(3)
+                continue
 
-        if line.startswith("NAME:"):
-            pdf.set_font("Helvetica", "B", 18)
-            pdf.cell(0, 10, _sanitize(line.replace("NAME:", "").strip()), ln=True, align="C")
-        elif any(line.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
-            pdf.ln(3)
-            pdf.set_font("Helvetica", "B", 12)
-            parts = line.split(":", 1)
-            pdf.cell(0, 8, _sanitize(parts[0]) + ":", ln=True)
-            if len(parts) > 1 and parts[1].strip():
+            if line.startswith("NAME:"):
+                name = _wrap_long_words(_sanitize(line.replace("NAME:", "").strip()))
+                pdf.set_font("Helvetica", "B", 18)
+                pdf.multi_cell(pw, 10, name, align="C")
+            elif any(line.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
+                pdf.ln(3)
+                pdf.set_font("Helvetica", "B", 12)
+                parts = line.split(":", 1)
+                pdf.multi_cell(pw, 8, _sanitize(parts[0]) + ":")
+                if len(parts) > 1 and parts[1].strip():
+                    pdf.set_font("Helvetica", "", 10)
+                    pdf.multi_cell(pw, 5, parts[1].strip())
+            elif line.startswith("- ") or line.startswith("• "):
                 pdf.set_font("Helvetica", "", 10)
-                pdf.multi_cell(0, 5, parts[1].strip())
-        elif line.startswith("- ") or line.startswith("• "):
-            pdf.set_font("Helvetica", "", 10)
-            pdf.cell(8, 5, "•")
-            pdf.multi_cell(0, 5, line[2:].strip())
-        else:
-            pdf.set_font("Helvetica", "", 10)
-            pdf.multi_cell(0, 5, line)
+                pdf.cell(5, 5, "")
+                pdf.multi_cell(pw - 5, 5, "  " + _wrap_long_words(line[2:].strip()))
+            else:
+                pdf.set_font("Helvetica", "", 10)
+                pdf.multi_cell(pw, 5, _wrap_long_words(line))
 
-    buf = io.BytesIO()
-    buf.write(pdf.output())
-    buf.seek(0)
-    return buf
+        buf = io.BytesIO()
+        buf.write(pdf.output())
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
 
 
 # ── Interview ─────────────────────────────────────────
@@ -644,8 +660,8 @@ def main():
                         use_container_width=True,
                     )
                 with dl2:
-                    try:
-                        pdf_buf = build_pdf(st.session_state.tailored_text)
+                    pdf_buf = build_pdf(st.session_state.tailored_text)
+                    if pdf_buf:
                         st.download_button(
                             label="⬇️ Download .pdf",
                             data=pdf_buf,
@@ -653,8 +669,8 @@ def main():
                             mime="application/pdf",
                             use_container_width=True,
                         )
-                    except ImportError:
-                        st.caption("Install fpdf2 for PDF: pip install fpdf2")
+                    else:
+                        st.caption("PDF generation failed — use .docx instead")
 
     with tab3:
         st.subheader("Interview Questions")
