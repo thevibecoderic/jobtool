@@ -76,40 +76,45 @@ def call_deepseek(prompt, system="You are a helpful career coach.", max_tokens=8
 # ── Glassdoor Lookup ──────────────────────────────────
 
 def lookup_glassdoor(company_name):
-    """Try to find Glassdoor rating + salary for a company via Google search."""
-    try:
-        query = f"{company_name} glassdoor review rating"
-        url = f"https://www.google.com/search?q={urllib.parse.quote(query)}&hl=en"
-        resp = requests.get(url, headers={**HEADERS, "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1)"}, timeout=10)
-        if resp.status_code != 200:
-            return None
-        soup = BeautifulSoup(resp.text, "html.parser")
+    """Try to find Glassdoor rating + salary for a company."""
+    # Try DuckDuckGo first (less likely to block cloud IPs)
+    rating, salary = None, None
+    for engine in ["ddg", "google"]:
+        try:
+            if engine == "ddg":
+                url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(company_name + ' glassdoor review')}"
+            else:
+                url = f"https://www.google.com/search?q={urllib.parse.quote(company_name + ' glassdoor review rating')}&hl=en"
+            resp = requests.get(url, headers=HEADERS, timeout=10)
+            if resp.status_code != 200:
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
 
-        # Try to extract rating from search snippet (e.g. "Rating: 4.2")
-        rating = None
-        for el in soup.find_all(["span", "div", "em"]):
-            t = el.get_text()
-            m = re.search(r'(\d\.\d)\s*(?:out of 5|stars|rating|★)', t, re.I)
-            if m:
-                rating = float(m.group(1))
-                break
+            # Extract rating from search snippet
+            if not rating:
+                for el in soup.find_all(["span", "div", "em", "a"]):
+                    t = el.get_text()
+                    m = re.search(r'(\d\.\d)\s*(?:out of 5|stars|rating|★|/5)', t, re.I)
+                    if m:
+                        rating = float(m.group(1))
+                        break
 
-        # Try salary
-        salary = None
-        salary_text = soup.get_text()
-        m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:–|-|to)\s*(?:S\$\s?|SGD\s?)?([\d,]+)', salary_text, re.I)
-        if m:
-            salary = f"SGD {m.group(1)} – {m.group(2)}"
-        else:
-            m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:/yr|/year|per year|/mo|/month)', salary_text, re.I)
-            if m:
-                salary = f"SGD {m.group(1)}"
+            # Try salary
+            if not salary:
+                salary_text = soup.get_text()
+                m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:–|-|to)\s*(?:S\$\s?|SGD\s?)?([\d,]+)', salary_text, re.I)
+                if m:
+                    salary = f"SGD {m.group(1)} - {m.group(2)}"
+                else:
+                    m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:/yr|/year|per year|/mo|/month)', salary_text, re.I)
+                    if m:
+                        salary = f"SGD {m.group(1)}"
 
-        if rating or salary:
-            return {"rating": rating, "salary": salary}
-        return None
-    except:
-        return None
+            if rating or salary:
+                return {"rating": rating, "salary": salary}
+        except:
+            continue
+    return {"error": "unavailable"}
 
 
 # ── Scraper ───────────────────────────────────────────
@@ -323,6 +328,11 @@ def build_docx(tailored_text):
     return buf
 
 
+def _sanitize(text):
+    """Strip or replace characters that Helvetica can't render."""
+    return text.encode("latin-1", errors="replace").decode("latin-1")
+
+
 def build_pdf(tailored_text):
     """Build a clean PDF resume using fpdf2."""
     from fpdf import FPDF
@@ -332,19 +342,19 @@ def build_pdf(tailored_text):
 
     lines = tailored_text.split('\n')
     for line in lines:
-        line = line.strip()
+        line = _sanitize(line.strip())
         if not line:
             pdf.ln(3)
             continue
 
         if line.startswith("NAME:"):
             pdf.set_font("Helvetica", "B", 18)
-            pdf.cell(0, 10, line.replace("NAME:", "").strip(), ln=True, align="C")
+            pdf.cell(0, 10, _sanitize(line.replace("NAME:", "").strip()), ln=True, align="C")
         elif any(line.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
             pdf.ln(3)
             pdf.set_font("Helvetica", "B", 12)
             parts = line.split(":", 1)
-            pdf.cell(0, 8, parts[0] + ":", ln=True)
+            pdf.cell(0, 8, _sanitize(parts[0]) + ":", ln=True)
             if len(parts) > 1 and parts[1].strip():
                 pdf.set_font("Helvetica", "", 10)
                 pdf.multi_cell(0, 5, parts[1].strip())
@@ -527,7 +537,9 @@ def main():
                 gd = lookup_glassdoor(company)
                 st.session_state.glassdoor_cache[company] = gd
         gd = st.session_state.glassdoor_cache.get(company)
-        if gd:
+        if gd and gd.get("error"):
+            st.caption("Glassdoor lookup blocked from cloud — try locally")
+        elif gd:
             c1, c2 = st.columns(2)
             with c1:
                 if gd.get("rating"):
