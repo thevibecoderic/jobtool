@@ -77,20 +77,43 @@ def call_deepseek(prompt, system="You are a helpful career coach.", max_tokens=8
 
 def lookup_glassdoor(company_name):
     """Try to find Glassdoor rating + salary for a company."""
-    # Try DuckDuckGo first (less likely to block cloud IPs)
     rating, salary = None, None
-    for engine in ["ddg", "google"]:
+
+    # 1. Try direct Glassdoor search (public search page)
+    try:
+        gd_url = f"https://www.glassdoor.com/Search/results.htm?keyword={urllib.parse.quote(company_name + ' Singapore')}"
+        resp = requests.get(gd_url, headers=HEADERS, timeout=12)
+        if resp.status_code == 200:
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for el in soup.find_all(["span", "div"], class_=re.compile(r"rating|score", re.I)):
+                t = el.get_text().strip()
+                m = re.search(r'(\d\.\d)', t)
+                if m and 1 <= float(m.group(1)) <= 5:
+                    rating = float(m.group(1))
+                    break
+            salary_text = soup.get_text()
+            m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:–|-|to)\s*(?:S\$\s?|SGD\s?)?([\d,]+)', salary_text, re.I)
+            if m:
+                salary = f"SGD {m.group(1)} - {m.group(2)}"
+            if rating or salary:
+                return {"rating": rating, "salary": salary}
+    except:
+        pass
+
+    # 2. Fallback: search engines
+    for engine in ["ddg", "google", "bing"]:
         try:
             if engine == "ddg":
                 url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(company_name + ' glassdoor review')}"
-            else:
+            elif engine == "google":
                 url = f"https://www.google.com/search?q={urllib.parse.quote(company_name + ' glassdoor review rating')}&hl=en"
+            else:
+                url = f"https://www.bing.com/search?q={urllib.parse.quote(company_name + ' glassdoor review')}"
             resp = requests.get(url, headers=HEADERS, timeout=10)
             if resp.status_code != 200:
                 continue
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            # Extract rating from search snippet
             if not rating:
                 for el in soup.find_all(["span", "div", "em", "a"]):
                     t = el.get_text()
@@ -99,7 +122,6 @@ def lookup_glassdoor(company_name):
                         rating = float(m.group(1))
                         break
 
-            # Try salary
             if not salary:
                 salary_text = soup.get_text()
                 m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:–|-|to)\s*(?:S\$\s?|SGD\s?)?([\d,]+)', salary_text, re.I)
@@ -114,7 +136,7 @@ def lookup_glassdoor(company_name):
                 return {"rating": rating, "salary": salary}
         except:
             continue
-    return {"error": "unavailable"}
+    return {"error": "Lookup blocked (datacenter IP rejected by search engines). Works on local runs."}
 
 
 # ── Scraper ───────────────────────────────────────────
@@ -527,35 +549,6 @@ def main():
     with col2:
         st.link_button("🔗 LinkedIn", job['url'])
 
-    # ── Glassdoor Panel ──
-    with st.expander("🏢 Glassdoor Info", expanded=False):
-        if "glassdoor_cache" not in st.session_state:
-            st.session_state.glassdoor_cache = {}
-        company = job['company']
-        if company not in st.session_state.glassdoor_cache:
-            with st.spinner(f"Looking up {company} on Glassdoor..."):
-                gd = lookup_glassdoor(company)
-                st.session_state.glassdoor_cache[company] = gd
-        gd = st.session_state.glassdoor_cache.get(company)
-        if gd and gd.get("error"):
-            st.caption("Glassdoor lookup blocked from cloud — try locally")
-        elif gd:
-            c1, c2 = st.columns(2)
-            with c1:
-                if gd.get("rating"):
-                    stars = "★" * int(gd["rating"]) + "☆" * (5 - int(gd["rating"]))
-                    st.metric("Glassdoor Rating", f"{gd['rating']:.1f} / 5")
-                    st.caption(stars)
-                else:
-                    st.caption("No rating found")
-            with c2:
-                if gd.get("salary"):
-                    st.metric("Est. Salary", gd["salary"])
-                else:
-                    st.caption("No salary data")
-        else:
-            st.caption("No Glassdoor data found for this company")
-
     # ── Tabs ──
     tab1, tab2, tab3, tab4 = st.tabs(["📋 Details", "📄 Tailor Resume", "❓ Questions", "🎤 Mock Interview"])
 
@@ -565,6 +558,35 @@ def main():
         if job.get('requirements'):
             st.subheader("Requirements")
             st.markdown(job['requirements'][:2000])
+
+        # ── Glassdoor Panel ──
+        with st.expander("🏢 Glassdoor Info", expanded=False):
+            if "glassdoor_cache" not in st.session_state:
+                st.session_state.glassdoor_cache = {}
+            company = job['company']
+            if company not in st.session_state.glassdoor_cache:
+                with st.spinner(f"Looking up {company} on Glassdoor..."):
+                    gd = lookup_glassdoor(company)
+                    st.session_state.glassdoor_cache[company] = gd
+            gd = st.session_state.glassdoor_cache.get(company)
+            if gd and gd.get("error"):
+                st.caption(gd["error"])
+            elif gd:
+                c1, c2 = st.columns(2)
+                with c1:
+                    if gd.get("rating"):
+                        stars = "★" * int(gd["rating"]) + "☆" * (5 - int(gd["rating"]))
+                        st.metric("Glassdoor Rating", f"{gd['rating']:.1f} / 5")
+                        st.caption(stars)
+                    else:
+                        st.caption("No rating found")
+                with c2:
+                    if gd.get("salary"):
+                        st.metric("Est. Salary", gd["salary"])
+                    else:
+                        st.caption("No salary data")
+            else:
+                st.caption("No Glassdoor data found for this company")
 
     with tab2:
         st.subheader("Resume Tailoring")
