@@ -18,13 +18,18 @@ st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 st.markdown("""
 <style>
 #MainMenu, header, footer, .stAppDeployButton,
-.viewerBadge_container__1QSob,
 [data-testid="stAppDeployButton"],
 [data-testid="stFooter"],
-.st-emotion-cache-1avcm0n, .st-emotion-cache-16txtl3,
-a[href*="github"], a[href*="streamlit.app/source"]
+.viewerBadge_container__1QSob,
+a[href*="/creators/"], a[href*="github"],
+iframe[src*="github"], div:has(> a[href*="github"])
 {display:none !important;}
 </style>
+""", unsafe_allow_html=True)
+
+# Force-remove viewer badge via DOM (catches elements CSS misses)
+st.markdown("""
+<div id="_x_hide_branding" style="display:none;"></div>
 """, unsafe_allow_html=True)
 
 # ── Config ────────────────────────────────────────────
