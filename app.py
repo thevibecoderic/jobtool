@@ -25,6 +25,15 @@ a[href*="/creators/"], a[href*="github"],
 iframe[src*="github"], div:has(> a[href*="github"])
 {display:none !important;}
 
+/* Always show sidebar expand arrow, even when header is hidden */
+[data-testid="collapsedControl"] {
+    display: flex !important;
+    position: fixed;
+    top: 12px;
+    left: 10px;
+    z-index: 99998;
+}
+
 /* ── Dark Mode ── */
 body.dark { --bg: #0e1117; --fg: #fafafa; --card: #1a1c24; --border: #333; }
 body.dark [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
@@ -46,16 +55,45 @@ body.dark .stAlert { background: var(--card) !important; }
 body.dark [data-testid="stSidebar"] { background: #0a0b10 !important; }
 body.dark [data-testid="stSidebar"] * { color: var(--fg) !important; }
 
-/* ── Dark Mode Toggle Button ── */
-#_dm_btn { position:fixed; top:10px; right:16px; z-index:99999;
+/* ── Floating Toolbar Buttons ── */
+._tb { position:fixed; top:10px; z-index:99999;
     background:#f0f0f0; border:1px solid #ccc; border-radius:20px;
     padding:5px 12px; cursor:pointer; font-size:15px; }
-body.dark #_dm_btn { background:#333; color:#fff; border-color:#555; }
+body.dark ._tb { background:#333; color:#fff; border-color:#555; }
+#_sb_btn { right:72px; }
+#_dm_btn { right:16px; }
 </style>
 
-<div id="_dm_btn" onclick="var b=document.body;b.classList.toggle('dark');var d=b.classList.contains('dark');this.textContent=d?'☀️':'🌙';localStorage.setItem('_dm',d?'1':'0')">🌙</div>
+<div id="_sb_btn" class="_tb" onclick="(function(){
+    var d=window.parent.document;
+    var cc=d.querySelector('[data-testid=collapsedControl]');
+    if(cc){cc.click();return;}
+    var sb=d.querySelector('[data-testid=stSidebar]');
+    if(sb){var btns=sb.querySelectorAll('button');for(var i=0;i<btns.length;i++){if((btns[i].getAttribute('aria-label')||'').includes('Close')){btns[i].click();return;}}}
+})()" title="Toggle sidebar">☰</div>
+
+<div id="_dm_btn" class="_tb" onclick="(function(){
+    var b=document.body;var m=localStorage.getItem('_dm')||'system';
+    if(m==='dark'){m='light';b.classList.remove('dark');}
+    else if(m==='light'){m='system';}
+    else{m='dark';b.classList.add('dark');}
+    localStorage.setItem('_dm',m);_udm(m);
+})()" title="Theme">🌙</div>
+
 <script>
-(function(){ if(localStorage.getItem('_dm')==='1'){ document.body.classList.add('dark'); var b=document.getElementById('_dm_btn'); if(b)b.textContent='☀️'; } })();
+var _mq=window.matchMedia('(prefers-color-scheme:dark)');
+function _udm(m){
+    var btn=document.getElementById('_dm_btn');if(!btn)return;
+    btn.textContent={dark:'🌙',light:'☀️',system:'💻'}[m]||'🌙';
+}
+function _applyDm(){
+    var m=localStorage.getItem('_dm')||'system';
+    var on=(m==='dark')||(m==='system'&&_mq.matches);
+    if(on)document.body.classList.add('dark');else document.body.classList.remove('dark');
+    _udm(m);
+}
+_mq.addEventListener('change',function(){if((localStorage.getItem('_dm')||'system')==='system')_applyDm();});
+_applyDm();
 </script>
 <div id="_x_hide_branding" style="display:none;"></div>
 """, unsafe_allow_html=True)
