@@ -34,21 +34,6 @@ echo 'DEEPSEEK_API_KEY=sk-your-key-here' > .env
 streamlit run ui.py
 ```
 
-## Deploy to Streamlit Community Cloud
-
-1. Fork or push this repo to your GitHub account
-2. Go to [share.streamlit.io](https://share.streamlit.io) and sign in with GitHub
-3. Click **New app** → select your repo / branch `main`
-4. **Main file path:** `ui.py`
-5. Under **Advanced settings** → **Secrets**, add:
-
-   ```toml
-   DEEPSEEK_API_KEY = "sk-your-deepseek-api-key"
-   ```
-
-6. Click **Deploy**
-
-Your app will be live at `https://<your-app>.streamlit.app`.
 
 ## Requirements
 
