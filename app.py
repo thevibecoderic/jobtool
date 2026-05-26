@@ -30,8 +30,6 @@ header { background: transparent !important; }
 <div id="_x_hide_branding" style="display:none;"></div>
 """, unsafe_allow_html=True)
 
-""", unsafe_allow_html=True)
-
 
 def main():
     st.title("🎯 SG Job Hunting Tool")
