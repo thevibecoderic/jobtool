@@ -1251,12 +1251,11 @@ def main():
                 else:
                     st.error("Could not read file. For .doc, try saving as .docx first.")
 
-        st.divider()
-        st.subheader("🤖 AI")
+        # AI always on when connected
         if DEEPSEEK_KEY:
-            st.success("DeepSeek API connected")
-            st.checkbox("Use AI for tailoring", value=True, key="use_ai_tailor")
-            st.checkbox("Use AI for questions", value=True, key="use_ai_questions")
+            st.success("DeepSeek AI connected")
+            st.session_state.use_ai_tailor = True
+            st.session_state.use_ai_questions = True
         else:
             st.warning("Add DEEPSEEK_API_KEY to .env or st.secrets then restart")
             st.session_state.use_ai_tailor = False
@@ -1281,7 +1280,10 @@ def main():
                 st.session_state.jobs = scrape_linkedin(search_query, max_jobs)
             st.rerun()
 
-    if "jobs" not in st.session_state or not st.session_state.jobs:
+    if "jobs" not in st.session_state:
+        return
+    if not st.session_state.jobs:
+        st.warning("No jobs found — try different keywords or a broader search.")
         return
 
     jobs = st.session_state.jobs
