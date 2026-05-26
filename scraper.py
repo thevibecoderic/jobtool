@@ -87,6 +87,7 @@ def _parse_embedded(soup):
                     desc = best.strip()
 
         company = "Unknown"
+        logo = ""
         company_keys = ["hiringOrganization", "companyDetails", "company", "companyName",
                         "employer", "hiringCompany", "organization", "org"]
         for ck in company_keys:
@@ -97,6 +98,13 @@ def _parse_embedded(soup):
                     if isinstance(v, str) and v.strip():
                         company = v.strip()
                         break
+                # Extract logo from same dict
+                if not logo:
+                    for lk in ["logo", "logoUrl", "companyLogoUrl", "logoImageUrl", "squareLogoUrl"]:
+                        lv = org.get(lk)
+                        if isinstance(lv, str) and lv.strip() and "http" in lv:
+                            logo = lv.strip()
+                            break
                 if company != "Unknown":
                     break
             elif isinstance(org, str) and org.strip():
@@ -104,6 +112,13 @@ def _parse_embedded(soup):
                 break
         if not isinstance(company, str) or company in ("0", "1", "None", "null", ""):
             company = "Unknown"
+        # Try top-level logo keys
+        if not logo:
+            for lk in ["logo", "logoUrl", "companyLogoUrl", "squareLogoUrl"]:
+                lv = jp.get(lk)
+                if isinstance(lv, str) and lv.strip() and "http" in lv:
+                    logo = lv.strip()
+                    break
 
         title = ""
         for tk in ["title", "jobTitle", "name", "headline", "position", "role"]:
@@ -140,10 +155,9 @@ def _parse_embedded(soup):
         jobs.append({
             "title": title,
             "company": company,
-            "url": url,
-            "description": desc,
+            "url": url, "description": desc,
             "requirements": extract_requirements(desc),
-            "mode": detect_mode(desc),
+            "mode": detect_mode(desc), "logo": logo,
             "date_posted": date_posted,
         })
 
@@ -279,7 +293,7 @@ def _parse_embedded(soup):
                     "url": url,
                     "description": txt[:3000],
                     "requirements": extract_requirements(txt),
-                    "mode": detect_mode(txt),
+                    "mode": detect_mode(txt), "logo": "",
                     "date_posted": "",
                 })
                 break
@@ -400,6 +414,11 @@ def scrape_linkedin(keywords, max_jobs=30):
                 seen.add(job_url)
                 company = company_el.get_text(strip=True) if company_el else "Unknown"
                 date_posted = _extract_card_date(card)
+                # Try to find logo near the card
+                logo = ""
+                img = card.find("img")
+                if img and img.get("src"):
+                    logo = img["src"]
                 desc, reqs = get_job_details(job_url)
                 if not desc:
                     desc = _extract_card_snippet(card)
@@ -408,7 +427,7 @@ def scrape_linkedin(keywords, max_jobs=30):
                     "company": company,
                     "url": job_url, "description": desc,
                     "requirements": reqs, "mode": detect_mode(desc),
-                    "date_posted": date_posted,
+                    "logo": logo, "date_posted": date_posted,
                 })
             if len(jobs) >= max_jobs:
                 break

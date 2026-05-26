@@ -11,7 +11,8 @@ from scraper import (scrape_linkedin, get_job_details, scrape_similar_jobs,
 from glassdoor import lookup_glassdoor, guess_company_info
 from resume import (parse_resume, tailor_resume_simple, tailor_resume_ai,
                     generate_tailored_resume, build_docx, build_tailored_docx)
-from interview import generate_questions_ai, generate_questions_simple, evaluate_answer
+from interview import (generate_questions_ai, generate_questions_simple,
+                       evaluate_answer, generate_suggested_answer)
 
 st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 
@@ -205,7 +206,10 @@ def main():
 
     # ── Job Card ──
     st.divider()
-    info_col, link_col = st.columns([6, 1.4])
+    logo_col, info_col, link_col = st.columns([1, 5, 1.4])
+    with logo_col:
+        if job.get("logo"):
+            st.image(job["logo"], width=64)
     with info_col:
         st.markdown(f"## {re.sub(r'([#*_`~\\[\\]<>])', lambda m: '\\' + m.group(1), job['title'])}")
         card_meta = [f"**{job['company']}**"]
@@ -452,6 +456,7 @@ def main():
             if "mock_idx" not in st.session_state:
                 st.session_state.mock_idx = 0
                 st.session_state.mock_feedback = []
+                st.session_state.mock_suggestions = {}
 
             midx = st.session_state.mock_idx
             if midx >= len(qs):
@@ -459,11 +464,20 @@ def main():
                 for i, fb in enumerate(st.session_state.mock_feedback):
                     with st.expander(f"Q{i+1} feedback"):
                         st.markdown(fb or "*No feedback*")
+                        sug = st.session_state.mock_suggestions.get(i)
+                        if sug:
+                            st.divider()
+                            st.caption("💡 Suggested answer:")
+                            st.markdown(sug)
 
                 qa_text = ""
                 for i, fb in enumerate(st.session_state.mock_feedback):
                     q_clean = re.sub(r'^\d+[\.\)\-]+\s*', '', qs[i])
-                    qa_text += f"Q{i+1}: {q_clean}\nA{i+1}: {fb or '*No answer*'}\n\n"
+                    qa_text += f"Q{i+1}: {q_clean}\nA{i+1}: {fb or '*No answer*'}\n"
+                    sug = st.session_state.mock_suggestions.get(i)
+                    if sug:
+                        qa_text += f"Suggested: {sug}\n"
+                    qa_text += "\n"
                 st.download_button(
                     "📥 Export Q&A (.txt)", data=qa_text,
                     file_name=f"interview_{re.sub(r'[^a-zA-Z0-9]','_',job['company'])[:20]}_{job['title'][:30].replace(' ','_')}.txt",
@@ -473,11 +487,29 @@ def main():
                 if st.button("🔄 Restart"):
                     st.session_state.mock_idx = 0
                     st.session_state.mock_feedback = []
+                    st.session_state.mock_suggestions = {}
                     st.rerun()
             else:
                 st.progress(midx / len(qs), f"Question {midx+1}/{len(qs)}")
                 qtext = re.sub(r'^\d+[\.\)\-]+\s*', '', qs[midx])
                 st.markdown(f"##### Q{midx+1}: {qtext}")
+
+                # Suggested answer
+                if DEEPSEEK_KEY:
+                    if st.button("💡 Suggest Answer", key=f"suggest_{midx}"):
+                        with st.spinner("Generating suggested answer..."):
+                            sug = generate_suggested_answer(
+                                qs[midx], job.get("title", ""), job.get("company", ""),
+                                job.get("description", "")
+                            )
+                            if sug:
+                                st.session_state.mock_suggestions[midx] = sug
+                                st.rerun()
+                sug = st.session_state.mock_suggestions.get(midx)
+                if sug:
+                    with st.expander("💡 Suggested Answer", expanded=True):
+                        st.markdown(sug)
+
                 answer = st.text_area("Your answer:", key=f"ans_{midx}", height=120)
 
                 c1, c2, c3 = st.columns(3)

@@ -64,6 +64,20 @@ def generate_questions_simple(job):
     return qs[:10]
 
 
+def generate_suggested_answer(question, job_title, company, jd_text=""):
+    """Generate a model/suggested answer for an interview question."""
+    from utils import DEEPSEEK_KEY, call_deepseek
+    if not DEEPSEEK_KEY:
+        return None
+    prompt = f"""Job: {job_title} at {company}
+Job Description: {jd_text[:1000]}
+Interview Question: {question}
+
+Write a strong, concise model answer (2-3 short paragraphs) using the STAR method where applicable.
+Tailor it to the specific role and company. Keep it professional but conversational — like a real person answering, not a textbook."""
+    return call_deepseek(prompt, "You are an experienced interview coach. Write realistic, concise model answers.", max_tokens=350)
+
+
 def evaluate_answer(question, answer):
     if not DEEPSEEK_KEY or len(answer.split()) < 5:
         return None
