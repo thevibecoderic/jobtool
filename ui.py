@@ -17,11 +17,11 @@ st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 # Hide Streamlit branding and GitHub links (keeping Fork + Record buttons visible)
 st.markdown("""
 <style>
-footer,
+header, footer,
 [data-testid="stFooter"],
 .viewerBadge_container__1QSob,
 a[href*="/creators/"], a[href*="github"],
-iframe[src*="github"]
+iframe[src*="github"], div:has(> a[href*="github"])
 {display:none !important;}
 </style>
 """, unsafe_allow_html=True)
@@ -585,6 +585,7 @@ def _extract_card_snippet(card):
 @st.cache_data(ttl=600, show_spinner=False)
 def scrape_linkedin(keywords, max_jobs=30):
     jobs = []
+    seen = set()
     for start in range(0, max_jobs, 25):
         url = (
             f"https://www.linkedin.com/jobs/search/?"
@@ -601,44 +602,18 @@ def scrape_linkedin(keywords, max_jobs=30):
 
             # 1) Try embedded data — no extra HTTP requests needed
             embedded = _parse_embedded(soup)
-            if embedded:
-                # Collect cards for snippet enrichment
-                cards = soup.find_all("div", class_=re.compile(r"base-card|job-card|job-search-card"))
-                if not cards:
-                    cards = soup.find_all("li", class_=re.compile(r"job|result"))
-                for j in embedded:
-                    # If description is blank, try matching card for snippet
-                    if not j.get("description") and cards:
-                        jurl = j.get("url", "").split("?")[0]
-                        for card in cards:
-                            link_el = card.find("a", href=re.compile(r"/jobs/view/|/jobs/"))
-                            if not link_el:
-                                continue
-                            card_url = link_el["href"]
-                            if not card_url.startswith("http"):
-                                card_url = "https://www.linkedin.com" + card_url
-                            if card_url.split("?")[0] == jurl:
-                                snippet = _extract_card_snippet(card)
-                                if snippet:
-                                    j["description"] = snippet
-                                    j["requirements"] = extract_requirements(snippet)
-                                    j["mode"] = detect_mode(snippet)
-                                date = _extract_card_date(card)
-                                if date and not j.get("date_posted"):
-                                    j["date_posted"] = date
-                                break
-                jobs.extend(embedded)
-                if len(jobs) >= max_jobs:
-                    break
-                time.sleep(1.5)
-                continue
+            for j in (embedded or []):
+                u = j.get("url", "")
+                if u and u not in seen:
+                    seen.add(u)
+                    jobs.append(j)
+            if len(jobs) >= max_jobs:
+                break
 
-            # 2) Fallback: parse visible cards + fetch individual pages
+            # 2) Parse ALL visible cards for jobs the embedded data missed
             cards = soup.find_all("div", class_=re.compile(r"base-card|job-card|job-search-card"))
             if not cards:
                 cards = soup.find_all("li", class_=re.compile(r"job|result"))
-            if not cards:
-                break
             for card in cards:
                 if len(jobs) >= max_jobs:
                     break
@@ -651,6 +626,9 @@ def scrape_linkedin(keywords, max_jobs=30):
                 if not job_url.startswith("http"):
                     job_url = "https://www.linkedin.com" + job_url
                 job_url = job_url.split("?")[0]
+                if job_url in seen:
+                    continue
+                seen.add(job_url)
                 company = company_el.get_text(strip=True) if company_el else "Unknown"
                 date_posted = _extract_card_date(card)
                 desc, reqs = get_job_details(job_url)
