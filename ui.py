@@ -1273,6 +1273,7 @@ def main():
         st.header("⚙️ Settings")
         kw = st.text_input("Job title / keywords", placeholder="e.g. software engineer")
         company_filter = st.text_input("Company (optional)", placeholder="e.g. Google, Shopee")
+        mode_filter = st.multiselect("Work mode filter", ["🏠 Remote", "🏢🏠 Hybrid", "🏢 In-office"], default=[])
         max_jobs = st.slider("Max jobs", 10, 50, 25)
         st.divider()
 
@@ -1351,7 +1352,17 @@ def main():
     if "job_idx" not in st.session_state:
         st.session_state.job_idx = 0  # show first job immediately
 
+    # Apply work mode filter
+    if mode_filter:
+        jobs = [j for j in jobs if j.get("mode", "") in mode_filter]
+    if not jobs:
+        st.warning("No jobs match the selected work mode filter. Adjust filters in the sidebar.")
+        return
+
     idx = st.session_state.job_idx
+    if idx >= len(jobs):
+        idx = 0
+        st.session_state.job_idx = 0
     total = len(jobs)
     # ── Job List (compact) ──
     st.success(f"Found {total} jobs")
@@ -1372,6 +1383,20 @@ def main():
         st.rerun()
 
     job = jobs[idx]
+
+    # ── Glassdoor: fetch eagerly so the rating shows on the job card ──
+    if "glassdoor_cache" not in st.session_state:
+        st.session_state.glassdoor_cache = {}
+    company = job["company"]
+    if company not in st.session_state.glassdoor_cache:
+        with st.spinner(f"Looking up {company}..."):
+            gd = lookup_glassdoor(company)
+            if gd and gd.get("error") and DEEPSEEK_KEY:
+                ai = guess_company_info(company, job.get("title", ""))
+                if ai:
+                    gd = ai
+            st.session_state.glassdoor_cache[company] = gd
+    gd = st.session_state.glassdoor_cache.get(company)
 
     # ── Anchor for scroll-to-top on navigation ──
     st.markdown('<div id="job-top"></div>', unsafe_allow_html=True)
@@ -1398,7 +1423,14 @@ def main():
     info_col, link_col = st.columns([6, 1.4])
     with info_col:
         st.markdown(f"## {re.sub(r'([#*_`~\\[\\]<>])', lambda m: '\\' + m.group(1), job['title'])}")
-        card_meta = [f"**{job['company']}**", job.get('mode', '')]
+        card_meta = [f"**{job['company']}**"]
+        if gd and gd.get("rating"):
+            stars = "★" * int(gd["rating"]) + "☆" * (5 - int(gd["rating"]))
+            ai_label = " (AI est.)" if gd.get("ai_guess") else ""
+            card_meta.append(f"{stars} {gd['rating']:.1f}{ai_label}")
+        if gd and gd.get("salary"):
+            card_meta.append(f"💰 {gd['salary']}")
+        card_meta.append(job.get('mode', ''))
         if job.get("date_posted"):
             card_meta.append(f"🕒 {job['date_posted']}")
         src = job.get("source", "")
@@ -1409,12 +1441,28 @@ def main():
         if job.get("url"):
             st.link_button("🔗 Open on LinkedIn", job['url'])
 
-    # ── Tabs ──
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Details", "📄 Tailor Resume", "❓ Questions", "🎤 Mock Interview", "💬 Ask Them"])
+    # ── Section Selector (persists across job navigation) ──
+    if "active_section" not in st.session_state:
+        st.session_state.active_section = 0
+    section_names = ["📋 Details", "📄 Tailor Resume", "❓ Questions", "🎤 Mock Interview", "💬 Ask Them"]
+    st.session_state.active_section = st.radio(
+        "Section", options=range(5), format_func=lambda i: section_names[i],
+        horizontal=True, label_visibility="collapsed", key="section_radio"
+    )
 
-    with tab1:
+    if st.session_state.active_section == 0:
         st.subheader("Description")
         desc_text = job.get('description') or '*No description*'
+        # Copy-to-clipboard button
+        if desc_text and desc_text != "*No description*":
+            import html as _html
+            safe_desc = _html.escape(json.dumps(desc_text[:10000]))
+            st.markdown(f"""
+            <input type="hidden" id="_desc_data" value="{safe_desc}">
+            <button onclick="var d=document.getElementById('_desc_data');navigator.clipboard.writeText(JSON.parse(d.value));this.textContent='Copied!';setTimeout(()=>{{this.textContent='📋 Copy'}},2000)"
+            style="margin-bottom:8px;padding:4px 12px;cursor:pointer;background:#f0f0f0;border:1px solid #ccc;border-radius:4px;font-size:13px">
+            📋 Copy</button>
+            """, unsafe_allow_html=True)
         st.markdown(desc_text[:5000], unsafe_allow_html=True)
         if job.get('requirements'):
             st.subheader("Requirements")
@@ -1439,43 +1487,31 @@ def main():
 
         # ── Glassdoor Panel ──
         with st.expander("🏢 Company Info", expanded=False):
-            if "glassdoor_cache" not in st.session_state:
-                st.session_state.glassdoor_cache = {}
-            company = job['company']
-            if company not in st.session_state.glassdoor_cache:
-                with st.spinner(f"Looking up {company} on Glassdoor..."):
-                    gd = lookup_glassdoor(company)
-                    if gd and gd.get("error") and DEEPSEEK_KEY:
-                        # Glassdoor blocked — try AI guess
-                        ai = guess_company_info(company, job.get("title", ""))
-                        if ai:
-                            gd = ai
-                    st.session_state.glassdoor_cache[company] = gd
-            gd = st.session_state.glassdoor_cache.get(company)
-            if gd and gd.get("error"):
-                st.caption(gd["error"])
-            elif gd:
+            gd2 = st.session_state.glassdoor_cache.get(job["company"])
+            if gd2 and gd2.get("error"):
+                st.caption(gd2["error"])
+            elif gd2:
                 c1, c2 = st.columns(2)
                 with c1:
-                    if gd.get("rating"):
-                        stars = "★" * int(gd["rating"]) + "☆" * (5 - int(gd["rating"]))
-                        label = "AI Est. Rating" if gd.get("ai_guess") else "Glassdoor Rating"
-                        st.metric(label, f"{gd['rating']:.1f} / 5")
+                    if gd2.get("rating"):
+                        stars = "★" * int(gd2["rating"]) + "☆" * (5 - int(gd2["rating"]))
+                        label = "AI Est. Rating" if gd2.get("ai_guess") else "Glassdoor Rating"
+                        st.metric(label, f"{gd2['rating']:.1f} / 5")
                         st.caption(stars)
                     else:
                         st.caption("No rating found")
                 with c2:
-                    if gd.get("salary"):
-                        label = "AI Est. Monthly" if gd.get("ai_guess") else "Est. Monthly Salary"
-                        st.metric(label, gd["salary"])
+                    if gd2.get("salary"):
+                        label = "AI Est. Monthly" if gd2.get("ai_guess") else "Est. Monthly Salary"
+                        st.metric(label, gd2["salary"])
                     else:
                         st.caption("No salary data")
-                if gd.get("ai_guess"):
+                if gd2.get("ai_guess"):
                     st.caption("⚠️ AI-generated estimate — not from Glassdoor")
             else:
                 st.caption("No company data found")
 
-    with tab2:
+    if st.session_state.active_section == 1:
         st.subheader("Resume Tailoring")
         if "resume_text" not in st.session_state or not st.session_state.resume_text:
             st.warning("Upload your resume in the sidebar first")
@@ -1598,7 +1634,7 @@ def main():
                     mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
                     use_container_width=True,
                 )
-    with tab3:
+    if st.session_state.active_section == 2:
         st.subheader("Interview Questions")
         if st.button("🎲 Generate Questions", type="primary"):
             with st.spinner("Generating..."):
@@ -1615,7 +1651,7 @@ def main():
                 qtext = re.sub(r'^\d+[\.\)\-]+\s*', '', q)
                 st.markdown(f"{i}. {qtext}")
 
-    with tab4:
+    if st.session_state.active_section == 3:
         st.subheader("Mock Interview")
         if "interview_qs" not in st.session_state or not st.session_state.interview_qs:
             st.warning("Generate questions first (❓ tab)")
@@ -1631,6 +1667,18 @@ def main():
                 for i, fb in enumerate(st.session_state.mock_feedback):
                     with st.expander(f"Q{i+1} feedback"):
                         st.markdown(fb or "*No feedback*")
+
+                # Export Q&A as .txt
+                qa_text = ""
+                for i, fb in enumerate(st.session_state.mock_feedback):
+                    q_clean = re.sub(r'^\d+[\.\)\-]+\s*', '', qs[i])
+                    qa_text += f"Q{i+1}: {q_clean}\nA{i+1}: {fb or '*No answer*'}\n\n"
+                st.download_button(
+                    "📥 Export Q&A (.txt)", data=qa_text,
+                    file_name=f"interview_{re.sub(r'[^a-zA-Z0-9]','_',job['company'])[:20]}_{job['title'][:30].replace(' ','_')}.txt",
+                    mime="text/plain", use_container_width=True,
+                )
+
                 if st.button("🔄 Restart"):
                     st.session_state.mock_idx = 0
                     st.session_state.mock_feedback = []
@@ -1642,7 +1690,7 @@ def main():
                 st.markdown(f"##### Q{midx+1}: {qtext}")
                 answer = st.text_area("Your answer:", key=f"ans_{midx}", height=120)
 
-                c1, c2 = st.columns(2)
+                c1, c2, c3 = st.columns(3)
                 with c1:
                     if st.button("✅ Submit", type="primary", use_container_width=True):
                         if answer.strip():
@@ -1658,8 +1706,14 @@ def main():
                         st.session_state.mock_feedback.append("*Skipped*")
                         st.session_state.mock_idx += 1
                         st.rerun()
+                with c3:
+                    if st.button("⏩ Skip to End", use_container_width=True):
+                        remaining = len(qs) - midx
+                        st.session_state.mock_feedback.extend(["*Skipped*"] * remaining)
+                        st.session_state.mock_idx = len(qs)
+                        st.rerun()
 
-    with tab5:
+    if st.session_state.active_section == 4:
         st.subheader("Questions to Ask the Interviewer")
         st.caption("Asking good questions shows preparation and interest. Pick 2-3 that matter most to you.")
 
