@@ -14,11 +14,10 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 
-# Hide all Streamlit branding, GitHub links, and deploy UI
+# Hide Streamlit branding and GitHub links (keeping Fork + Record buttons visible)
 st.markdown("""
 <style>
-#MainMenu, header, footer, .stAppDeployButton,
-[data-testid="stAppDeployButton"],
+header, footer,
 [data-testid="stFooter"],
 .viewerBadge_container__1QSob,
 a[href*="/creators/"], a[href*="github"],
