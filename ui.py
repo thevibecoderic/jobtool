@@ -411,9 +411,6 @@ def _parse_embedded(soup):
         except:
             pass
 
-    if jobs:
-        return jobs
-
     # 2) window.__INITIAL_STATE__ / window.__APOLLO_STATE__ in inline scripts
     for script in soup.find_all("script"):
         if not script.string:
@@ -465,9 +462,6 @@ def _parse_embedded(soup):
                 walk2(data)
             except:
                 continue
-        if jobs:
-            return jobs
-
     # 3) JSON-LD
     for s in soup.find_all("script", type="application/ld+json"):
         try:
@@ -479,12 +473,11 @@ def _parse_embedded(soup):
         except:
             pass
 
-    # 4) Last resort: search raw page text for job description blocks
-    if not jobs:
-        page_text = soup.get_text()
-        # Look for job title patterns followed by description-like text
-        # LinkedIn pages often have job titles in h1/h2 with desc following
-        for h in soup.find_all(["h1", "h2", "h3"]):
+    # 4) Hunt raw page text for additional jobs (works when structured data is sparse)
+    page_text = soup.get_text()
+    # Look for job title patterns followed by description-like text
+    # LinkedIn pages often have job titles in h1/h2 with desc following
+    for h in soup.find_all(["h1", "h2", "h3"]):
             title = h.get_text(strip=True)
             if not title or len(title) < 3 or len(title) > 120:
                 continue
@@ -594,11 +587,17 @@ def scrape_linkedin(keywords, max_jobs=30):
             f"&f_TPR={TIME_RANGE}"
             f"&position=1&pageNum={start // 25}"
         )
-        try:
-            resp = requests.get(url, headers=HEADERS, timeout=15)
-            if resp.status_code != 200:
+        page_jobs = 0
+        for headers in (HEADERS, GOOGLEBOT_HEADERS):
+            if page_jobs >= max(5, max_jobs // 4):
                 break
-            soup = BeautifulSoup(resp.text, "html.parser")
+            try:
+                resp = requests.get(url, headers=headers, timeout=15)
+                if resp.status_code != 200:
+                    continue
+                soup = BeautifulSoup(resp.text, "html.parser")
+            except:
+                continue
 
             # 1) Try embedded data — no extra HTTP requests needed
             embedded = _parse_embedded(soup)
@@ -651,10 +650,11 @@ def scrape_linkedin(keywords, max_jobs=30):
                     "requirements": reqs, "mode": detect_mode(desc),
                     "logo": "", "date_posted": date_posted,
                 })
+            page_jobs = len(jobs)
             if len(jobs) >= max_jobs:
                 break
             time.sleep(1.5)
-        except:
+        if len(jobs) >= max_jobs:
             break
     return jobs
 
