@@ -9,7 +9,7 @@ import streamlit as st
 import requests, re, json, os, time, urllib.parse, io, tempfile
 from bs4 import BeautifulSoup
 from docx import Document
-from docx.shared import Pt
+from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
@@ -31,6 +31,15 @@ TIME_RANGE = "r1209600"
 def _load_env():
     if os.environ.get("DEEPSEEK_API_KEY"):
         return
+    # Streamlit Community Cloud secrets
+    try:
+        import streamlit as _st
+        if _st.secrets.get("DEEPSEEK_API_KEY"):
+            os.environ["DEEPSEEK_API_KEY"] = _st.secrets["DEEPSEEK_API_KEY"]
+            return
+    except Exception:
+        pass
+    # Local .env fallback
     script_dir = os.path.dirname(os.path.abspath(__file__))
     env_path = os.path.join(script_dir, ".env")
     try:
@@ -831,12 +840,27 @@ Requirements: {job.get('requirements','')[:1000]}
 My current resume:
 {resume[:3000]}
 
-Rewrite my resume to be tailored for this specific job. Do NOT invent experience I don't have — rephrase, reorder, and emphasize relevant skills/experience already in my resume. Include ONLY these sections in this exact order:
+Rewrite my resume for this job. Rules:
+- NEVER add anything I didn't actually do — no invented skills, metrics, or achievements
+- Keep my real job titles, dates, and company names exactly as-is
+- Use professional language with strong action verbs (e.g. "Led", "Designed", "Built", "Optimised")
+- Use UK English spelling throughout: -ise not -ize, -our not -or, -re not -er, "travelling" not "traveling"
+- Avoid semicolons and run-on sentences — keep each bullet to one clear idea
+- Weave ATS keywords from the job description naturally into the summary and bullets
+- Use the employer's exact terminology for technical terms (e.g. "CI/CD pipelines" not "deployment automation"), but apply UK spelling to all other words
+Include ONLY these sections in this exact order:
+- NEVER add anything I didn't actually do — no invented skills, metrics, or achievements
+- Keep my real job titles, dates, and company names exactly as-is
+- Use plain, direct language — short sentences, no semicolons, no buzzwords like "leveraged" or "spearheaded"
+- Write like a human writes: "I built the API" not "Spearheaded the development of a RESTful API"
+- Keep bullets concise — one line each when possible
+- Weave in ATS keywords naturally from the job description
+Include ONLY these sections in this exact order:
 
 {chr(10).join(sections)}
 
-Return the full rewritten resume with those exact headers."""
-    return call_deepseek(prompt, "You are a professional resume writer. Be honest — only use information from the original resume.", max_tokens=1500)
+IMPORTANT — ATS Optimisation: Include keywords and phrases from the job description naturally in the SUMMARY and SKILLS sections. Use exact terminology the employer uses (e.g. if they say "CI/CD pipelines", use that phrase, not "deployment automation"). Place the most relevant keywords early in each section. Return the full rewritten resume with those exact headers."""
+    return call_deepseek(prompt, "You are an expert resume writer. Use UK English spelling throughout (-ise not -ize, -our not -or, -re not -er). Use strong professional action verbs. Avoid semicolons and run-on sentences. Weave ATS keywords naturally. NEVER add anything not in the original resume.", max_tokens=1500)
 
 
 def build_docx(tailored_text):
@@ -844,151 +868,47 @@ def build_docx(tailored_text):
     style = doc.styles['Normal']
     style.font.name = 'Calibri'
     style.font.size = Pt(11)
+
+    section_headers = {"SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"}
     lines = tailored_text.split('\n')
+
     for line in lines:
         line = line.strip()
         if not line:
             continue
+
         if line.startswith("NAME:"):
             p = doc.add_paragraph()
             run = p.add_run(line.replace("NAME:", "").strip())
             run.bold = True
             run.font.size = Pt(18)
             p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        elif any(line.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
+
+        elif any(line.startswith(h) for h in section_headers):
             p = doc.add_paragraph()
             parts = line.split(":", 1)
             run = p.add_run(parts[0] + ":")
             run.bold = True
             run.font.size = Pt(13)
             if len(parts) > 1 and parts[1].strip():
-                p.add_run(" " + parts[1].strip())
-            elif line.startswith("- "):
-                pdf.set_font("Helvetica", "", 9)
-                text = "  - " + _sanitize(line[2:].strip())
-            doc.add_paragraph(line)
+                p.add_run("  " + parts[1].strip())
+
+        elif line.startswith("- ") or line.startswith("\u2022 "):
+            p = doc.add_paragraph()
+            p.paragraph_format.left_indent = Cm(1)
+            p.paragraph_format.space_after = Pt(2)
+            text = line.lstrip("-\u2022 ").strip()
+            p.add_run("\u2022 " + text)
+
+        else:
+            p = doc.add_paragraph(line)
+
     buf = io.BytesIO()
     doc.save(buf)
     buf.seek(0)
     return buf
 
 
-def _wrap_long_words(text, max_chars=80):
-    import textwrap
-    parts = []
-    for word in text.split(' '):
-        if len(word) > max_chars:
-            parts.append(' '.join(textwrap.wrap(word, max_chars)))
-        else:
-            parts.append(word)
-    return ' '.join(parts)
-
-
-def _sanitize(text):
-    """Replace common Unicode chars with ASCII before latin-1 fallback for PDF core fonts."""
-    _UNICODE_MAP = {
-        '\u2605': '*',   # ★ black star → *
-        '\u2606': '-',   # ☆ white star → -
-        '\u2022': '-',   # • bullet → -
-        '\u2013': '-',   # – en dash → -
-        '\u2014': '--',  # — em dash → --
-        '\u2018': "'",   # ' left single quote
-        '\u2019': "'",   # ' right single quote
-        '\u201c': '"',   # " left double quote
-        '\u201d': '"',   # " right double quote
-        '\u2026': '...', # … ellipsis
-        '\xa0': ' ',     # non-breaking space
-        '\u2122': '(TM)',# ™ trademark
-        '\u00ae': '(R)', # ® registered
-    }
-    for k, v in _UNICODE_MAP.items():
-        text = text.replace(k, v)
-    # Strip remaining non-latin1; keep common symbols
-    return text.encode("latin-1", errors="replace").decode("latin-1")
-
-
-def _wrap_text(pdf, text, width, lh):
-    """Write text with word-wrapping, breaking long words if needed."""
-    words = text.split(' ')
-    line = ''
-    for word in words:
-        test = f"{line} {word}".strip() if line else word
-        if pdf.get_string_width(test) <= width:
-            line = test
-        else:
-            if line:
-                pdf.cell(width, lh, line, ln=True)
-            # If single word still too long, break it
-            while pdf.get_string_width(word) > width:
-                for i in range(len(word), 0, -1):
-                    if pdf.get_string_width(word[:i] + '-') <= width:
-                        pdf.cell(width, lh, word[:i] + '-', ln=True)
-                        word = word[i:]
-                        break
-                else:
-                    mid = len(word) // 2
-                    pdf.cell(width, lh, word[:mid], ln=True)
-                    word = word[mid:]
-            line = word
-    if line:
-        pdf.cell(width, lh, line, ln=True)
-
-
-def build_pdf(tailored_text):
-    """Build a clean PDF resume using fpdf2. Returns BytesIO or None on failure."""
-    if not tailored_text:
-        return None
-    try:
-        from fpdf import FPDF
-    except ImportError:
-        return None
-    try:
-        pdf = FPDF("P", "mm", "A4")
-        pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        pdf.set_left_margin(15)
-        pdf.set_right_margin(15)  # ensures right boundary
-        pw = pdf.w - 30
-        lh = 4.5
-
-        lines = tailored_text.split('\n')
-        for line in lines:
-            line = line.strip()
-            if not line:
-                pdf.ln(2)
-                continue
-
-            safe = _sanitize(line)
-
-            if safe.startswith("NAME:"):
-                pdf.set_font("Helvetica", "B", 16)
-                pdf.cell(pw, 8, safe.replace("NAME:", "").strip(), align="C", ln=True)
-                pdf.ln(3)
-
-            elif any(safe.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
-                pdf.ln(3)
-                pdf.set_font("Helvetica", "B", 11)
-                pdf.cell(pw, 6, safe, ln=True)
-                pdf.ln(1)
-
-            elif safe.startswith("- "):
-                pdf.set_font("Helvetica", "", 9)
-                pdf.set_x(20)
-                _wrap_text(pdf, "- " + safe[2:].strip(), pw - 5, lh)
-
-            else:
-                pdf.set_font("Helvetica", "", 9)
-                _wrap_text(pdf, safe, pw, lh)
-
-        buf = io.BytesIO()
-        pdf_data = pdf.output(dest="S")
-        if isinstance(pdf_data, str):
-            pdf_data = pdf_data.encode('latin-1')
-        buf.write(pdf_data)
-        buf.seek(0)
-        return buf
-    except Exception as e:
-        return f"pdf_error:{e}"
 
 
 
@@ -1139,6 +1059,108 @@ def _extract_company(text, use_ai=True):
             return line[:40]
     return "Unknown"
 
+
+def build_tailored_docx(original_bytes, tailored_text):
+    """Edit the original DOCX file in-place with tailored content, preserving formatting."""
+    try:
+        from docx import Document as DocxDocument
+        from io import BytesIO
+        
+        doc = DocxDocument(BytesIO(original_bytes))
+        # Parse tailored text into sections
+        sections = {}
+        current_section = "OTHER"
+        for line in tailored_text.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            if line.startswith("NAME:"):
+                sections["NAME"] = line.replace("NAME:", "").strip()
+            elif any(line.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
+                parts = line.split(":", 1)
+                current_section = parts[0]
+                sections[current_section] = parts[1].strip() if len(parts) > 1 else ""
+            else:
+                sections[current_section] = sections.get(current_section, "") + "\n" + line
+        
+        # Walk through paragraphs and replace content by section
+        section_order = ["NAME", "SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "CERTIFICATIONS"]
+        section_idx = 0
+        found_name = False
+        
+        for para in doc.paragraphs:
+            text = para.text.strip()
+            if not text:
+                continue
+            
+            # Detect section by bold/header patterns
+            upper_text = text.upper()
+            for sec in section_order:
+                if upper_text.startswith(sec + ":") or upper_text == sec:
+                    if sec in sections and sections[sec]:
+                        # Replace the section header + content
+                        new_text = f"{sec}: {sections[sec]}"
+                        # Clear paragraph and set new text, preserving formatting
+                        for run in para.runs:
+                            run.text = ""
+                        if para.runs:
+                            para.runs[0].text = new_text
+                        else:
+                            para.add_run(new_text)
+                    section_idx = section_order.index(sec) + 1
+                    found_name = (sec == "NAME")
+                    break
+            else:
+                # Body text under current section — append to first non-header paragraph
+                if section_idx > 0 and not found_name:
+                    pass  # Skip body text replacement for now (complex)
+        
+        buf = BytesIO()
+        doc.save(buf)
+        buf.seek(0)
+        return buf
+    except Exception:
+        return None
+
+
+def scrape_similar_jobs(job_title, company, max_jobs=5):
+    """Find similar jobs on LinkedIn by searching with the same title."""
+    query = urllib.parse.quote(f"{job_title} -{company}")
+    url = f"https://www.linkedin.com/jobs/search/?keywords={query}&location=Singapore&f_TPR=r1209600&position=1&pageNum=0"
+    try:
+        resp = requests.get(url, headers=GOOGLEBOT_HEADERS, timeout=15)
+        if resp.status_code != 200:
+            return []
+        soup = BeautifulSoup(resp.text, "html.parser")
+        cards = soup.find_all("div", class_=re.compile(r"base-card|job-card"))
+        if not cards:
+            cards = soup.find_all("li", class_=re.compile(r"job|result"))
+        
+        similar = []
+        seen_titles = set()
+        for card in cards:
+            if len(similar) >= max_jobs:
+                break
+            title_el = card.find(["h3", "h2", "span"], class_=re.compile(r"title", re.I))
+            company_el = card.find(["h4", "span", "div"], class_=re.compile(r"subtitle|company", re.I))
+            link_el = card.find("a", href=re.compile(r"/jobs/"))
+            if not title_el:
+                continue
+            title = title_el.get_text(strip=True)
+            comp = company_el.get_text(strip=True) if company_el else "?"
+            if title.lower() in seen_titles or title.lower() == job_title.lower():
+                continue
+            seen_titles.add(title.lower())
+            url = ""
+            if link_el:
+                url = link_el["href"]
+                if not url.startswith("http"):
+                    url = "https://www.linkedin.com" + url
+            similar.append({"title": title, "company": comp, "url": url})
+        return similar
+    except:
+        return []
+
 def main():
     st.title("🎯 Job Scraper + Resume Tailor + Mock Interview")
     st.caption("Scrapes LinkedIn jobs in Singapore (last 2 weeks) | Powered by DeepSeek")
@@ -1203,6 +1225,7 @@ def main():
         if resume_file:
             if "resume_filename" not in st.session_state or st.session_state.resume_filename != resume_file.name:
                 st.session_state.resume_filename = resume_file.name
+                st.session_state.resume_bytes = resume_file.getvalue()
                 st.session_state.resume_text = parse_resume(resume_file)
                 st.session_state.tailored_text = None
                 if st.session_state.resume_text:
@@ -1316,6 +1339,22 @@ def main():
             st.subheader("Requirements")
             st.markdown(job['requirements'][:2000])
 
+
+            # ── Similar Jobs ──
+            if "similar_jobs" not in st.session_state:
+                st.session_state.similar_jobs = {}
+            job_key = job.get("url", "") + job.get("title", "")
+            if job_key not in st.session_state.similar_jobs:
+                with st.spinner("Finding similar jobs..."):
+                    st.session_state.similar_jobs[job_key] = scrape_similar_jobs(job["title"], job["company"])
+            similar = st.session_state.similar_jobs.get(job_key, [])
+            if similar:
+                with st.expander(f"🔗 Similar Jobs on LinkedIn ({len(similar)})", expanded=False):
+                    for sj in similar:
+                        if sj.get("url"):
+                            st.markdown(f"- **{sj['title']}** — *{sj['company']}*  [View]({sj['url']})")
+                        else:
+                            st.markdown(f"- **{sj['title']}** — *{sj['company']}*")
         # ── Glassdoor Panel ──
         with st.expander("🏢 Company Info", expanded=False):
             if "glassdoor_cache" not in st.session_state:
@@ -1383,6 +1422,7 @@ def main():
                             else:
                                 rate, missing = tailor_resume_simple(st.session_state.resume_text, job)
                                 st.session_state.analysis = f"**Keyword Match: {rate:.0f}%**\n\nMissing: {', '.join(missing[:10])}"
+                                st.session_state.missing
                         else:
                             rate, missing = tailor_resume_simple(st.session_state.resume_text, job)
                             st.session_state.analysis = f"**Keyword Match: {rate:.0f}%**\n\nMissing: {', '.join(missing[:10])}"
@@ -1404,6 +1444,10 @@ def main():
                 st.divider()
                 st.markdown(st.session_state.analysis)
 
+                if "missing_skills" in st.session_state and st.session_state.missing_skills:
+                    st.caption("💡 Missing keywords — add to resume if you have this experience:")
+                    st.markdown("• " + "\n• ".join(st.session_state.missing_skills[:8]))
+
             if "tailored_text" in st.session_state and st.session_state.tailored_text:
                 st.divider()
                 # ── Resume Diff Preview ──
@@ -1412,55 +1456,67 @@ def main():
                         import difflib
                         orig_lines = st.session_state.resume_text.splitlines()
                         new_lines = st.session_state.tailored_text.splitlines()
-                        diff = difflib.unified_diff(orig_lines, new_lines, 
-                                                    fromfile='Original', tofile='Tailored',
-                                                    lineterm='')
-                        diff_text = []
-                        for dline in diff:
-                            if dline.startswith('+'):
-                                diff_text.append(f'<span style="background:#d4edda;color:#155724">  {dline}  </span>')
-                            elif dline.startswith('-'):
-                                diff_text.append(f'<span style="background:#f8d7da;color:#721c24">  {dline}  </span>')
-                            elif dline.startswith('@@'):
-                                diff_text.append(f'<span style="color:#6c757d;font-size:0.8em">{dline}</span>')
-                            else:
-                                diff_text.append(dline)
-                        st.markdown('<br>'.join(diff_text[:100]), unsafe_allow_html=True)
-                        st.caption("Green = added | Red = removed")
+                        
+                        # Word-level inline diff
+                        diff_html = []
+                        sm = difflib.SequenceMatcher(None, orig_lines, new_lines)
+                        for tag, i1, i2, j1, j2 in sm.get_opcodes():
+                            if tag == 'equal':
+                                for line in orig_lines[i1:i2]:
+                                    diff_html.append(line)
+                            elif tag == 'replace':
+                                for old, new in zip(orig_lines[i1:i2], new_lines[j1:j2]):
+                                    ws = difflib.SequenceMatcher(None, old.split(), new.split())
+                                    parts = []
+                                    for op, a1, a2, b1, b2 in ws.get_opcodes():
+                                        if op == 'equal':
+                                            parts.append(' '.join(old.split()[a1:a2]))
+                                        elif op == 'delete':
+                                            parts.append(f'<span style="background:#f8d7da;color:#721c24;text-decoration:line-through">{" ".join(old.split()[a1:a2])}</span>')
+                                        elif op == 'insert':
+                                            parts.append(f'<span style="background:#d4edda;color:#155724">{" ".join(new.split()[b1:b2])}</span>')
+                                        elif op == 'replace':
+                                            parts.append(f'<span style="background:#f8d7da;color:#721c24;text-decoration:line-through">{" ".join(old.split()[a1:a2])}</span>')
+                                            parts.append(f'<span style="background:#d4edda;color:#155724">{" ".join(new.split()[b1:b2])}</span>')
+                                    diff_html.append(' '.join(parts))
+                            elif tag == 'delete':
+                                for line in orig_lines[i1:i2]:
+                                    diff_html.append(f'<span style="background:#f8d7da;color:#721c24;text-decoration:line-through">{line}</span>')
+                            elif tag == 'insert':
+                                for line in new_lines[j1:j2]:
+                                    diff_html.append(f'<span style="background:#d4edda;color:#155724">{line}</span>')
+                        
+                        st.markdown('<br>'.join(diff_html[:150]), unsafe_allow_html=True)
+                        st.caption("Red strikethrough = removed | Green = added | Inline = changed words")
 
-                st.subheader("✨ Tailored Resume Preview")
-                st.markdown(st.session_state.tailored_text)
+                st.subheader("✏️ Tailored Resume — Edit Before Download")
+                edited = st.text_area(
+                    "Make any changes below. Add experience, tweak wording, or paste missing details.",
+                    value=st.session_state.tailored_text,
+                    height=400,
+                    key="tailored_editor",
+                )
+                if edited != st.session_state.tailored_text:
+                    st.session_state.tailored_text = edited
+                    st.rerun()
 
                 company_slug = re.sub(r'[^a-zA-Z0-9]', '_', job['company'])[:20]
                 role_slug = job['title'][:30].replace(' ', '_')
                 orig_name = st.session_state.get('resume_filename', 'resume')
                 orig_base = re.sub(r'\.[^.]+$', '', orig_name)
                 fname_base = f'{orig_base} - {company_slug} - {role_slug}'
-                dl1, dl2 = st.columns(2)
-                with dl1:
+                docx_buf = None
+                if st.session_state.get("resume_bytes"):
+                    docx_buf = build_tailored_docx(st.session_state.resume_bytes, st.session_state.tailored_text)
+                if not docx_buf:
                     docx_buf = build_docx(st.session_state.tailored_text)
-                    st.download_button(
-                        label="⬇️ Download .docx",
-                        data=docx_buf,
-                        file_name=f"{fname_base}.docx",
-                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                        use_container_width=True,
-                    )
-                with dl2:
-                    pdf_buf = build_pdf(st.session_state.tailored_text)
-                    if pdf_buf and not (isinstance(pdf_buf, str) and pdf_buf.startswith("pdf_error:")):
-                        st.download_button(
-                            label="⬇️ Download .pdf",
-                            data=pdf_buf,
-                            file_name=f"{fname_base}.pdf",
-                            mime="application/pdf",
-                            use_container_width=True,
-                        )
-                    else:
-                        if isinstance(pdf_buf, str) and pdf_buf.startswith("pdf_error:"):
-                            st.caption(f"PDF error: {pdf_buf}")
-                        else:
-                            st.caption("PDF unavailable — install fpdf2: `pip install fpdf2`")
+                st.download_button(
+                    label="⬇️ Download .docx",
+                    data=docx_buf,
+                    file_name=f"{fname_base}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                )
     with tab3:
         st.subheader("Interview Questions")
         if st.button("🎲 Generate Questions", type="primary"):

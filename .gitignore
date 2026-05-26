@@ -5,3 +5,5 @@ venv/
 .DS_Store
 *.swp
 *.swo
+.codewhale/
+skills/

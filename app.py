@@ -45,7 +45,7 @@ def scrape_linkedin(keywords, max_jobs=25):
             soup = BeautifulSoup(resp.text, "html.parser")
 
             # Try embedded JSON-LD / __NEXT_DATA__ first
-            jobs_from_embedded = _parse_embedded(soup, keywords)
+            jobs_from_embedded = _parse_embedded(soup)
             if jobs_from_embedded:
                 jobs.extend(jobs_from_embedded)
                 if len(jobs) >= max_jobs:
@@ -140,7 +140,7 @@ def scrape_linkedin_via_google(keywords, max_jobs=25):
     return jobs
 
 
-def _parse_embedded(soup, keywords):
+def _parse_embedded(soup):
     """Try to extract jobs from __NEXT_DATA__ or JSON-LD embedded in the page."""
     jobs = []
     # Try __NEXT_DATA__
@@ -148,19 +148,25 @@ def _parse_embedded(soup, keywords):
     if next_data and next_data.string:
         try:
             data = json.loads(next_data.string)
-            # Walk the props tree for job data
             def walk(obj, depth=0):
                 if depth > 10:
                     return
                 if isinstance(obj, dict):
                     if "jobPosting" in obj:
                         jp = obj["jobPosting"]
+                        desc = jp.get("description", "")
+                        if isinstance(desc, str) and len(desc) > 0 and desc[0] == "<":
+                            desc = BeautifulSoup(desc, "html.parser").get_text()
+                        company = "Unknown"
+                        org = jp.get("hiringOrganization")
+                        if isinstance(org, dict):
+                            company = org.get("name", "Unknown")
                         jobs.append({
                             "title": jp.get("title", ""),
-                            "company": jp.get("hiringOrganization", {}).get("name", "Unknown") if isinstance(jp.get("hiringOrganization"), dict) else "Unknown",
+                            "company": company,
                             "url": jp.get("url", ""),
-                            "description": jp.get("description", ""),
-                            "requirements": "",
+                            "description": desc,
+                            "requirements": extract_requirements(desc),
                         })
                     for v in obj.values():
                         walk(v, depth + 1)
@@ -177,16 +183,23 @@ def _parse_embedded(soup, keywords):
     for s in soup.find_all("script", type="application/ld+json"):
         try:
             data = json.loads(s.string)
-            if isinstance(data, list):
-                data = data[0]
-            if data.get("@type") == "JobPosting":
-                jobs.append({
-                    "title": data.get("title", ""),
-                    "company": data.get("hiringOrganization", {}).get("name", "Unknown") if isinstance(data.get("hiringOrganization"), dict) else "Unknown",
-                    "url": data.get("url", ""),
-                    "description": data.get("description", ""),
-                    "requirements": "",
-                })
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if item.get("@type") == "JobPosting":
+                    desc = item.get("description", "")
+                    if isinstance(desc, str) and len(desc) > 0 and desc[0] == "<":
+                        desc = BeautifulSoup(desc, "html.parser").get_text()
+                    company = "Unknown"
+                    org = item.get("hiringOrganization")
+                    if isinstance(org, dict):
+                        company = org.get("name", "Unknown")
+                    jobs.append({
+                        "title": item.get("title", ""),
+                        "company": company,
+                        "url": item.get("url", ""),
+                        "description": desc,
+                        "requirements": extract_requirements(desc),
+                    })
         except:
             pass
     return jobs
