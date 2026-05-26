@@ -474,7 +474,6 @@ def _parse_embedded(soup):
             pass
 
     # 4) Hunt raw page text for additional jobs (works when structured data is sparse)
-    page_text = soup.get_text()
     # Look for job title patterns followed by description-like text
     # LinkedIn pages often have job titles in h1/h2 with desc following
     for h in soup.find_all(["h1", "h2", "h3"]):
@@ -509,6 +508,9 @@ def _parse_embedded(soup):
                     break
             if len(jobs) >= 10:
                 break
+    return jobs
+
+
 def _extract_card_date(card):
     """Extract posting date / time-ago text from a job card."""
     for el in card.find_all(["time", "span", "p"]):
@@ -1040,21 +1042,6 @@ def _extract_company(text, use_ai=True):
             return line[:40]
     return "Unknown"
 
-    if m and len(m.group(1)) > 2:
-        return m.group(1).strip().rstrip('.,')
-    m = re.search(r'@\s*([A-Z][A-Za-z0-9 .&,-]+?)(?:\s|$|\.|,)', text)
-    if m and len(m.group(1)) > 2:
-        return m.group(1).strip()
-    m = re.search(r'([A-Z][A-Za-z0-9 .&,-]{2,30})\s+is\s+(hiring|looking)', text)
-    if m:
-        return m.group(1).strip()
-    # Try first line that looks like a company name
-    lines = [l.strip() for l in text.split('\n') if l.strip()]
-    for line in lines[:5]:
-        if re.match(r'^[A-Z][A-Za-z0-9 .&,-]{2,30}$', line) and not re.match(r'^(Singapore|Remote|Hybrid)', line, re.I):
-            return line[:40]
-    return "Unknown"
-
 
 def build_tailored_docx(original_bytes, tailored_text):
     """Edit the original DOCX file in-place with tailored content, preserving formatting."""
@@ -1338,21 +1325,22 @@ def main():
             st.markdown(job['requirements'][:2000])
 
 
-            # ── Similar Jobs ──
-            if "similar_jobs" not in st.session_state:
-                st.session_state.similar_jobs = {}
-            job_key = job.get("url", "") + job.get("title", "")
-            if job_key not in st.session_state.similar_jobs:
-                with st.spinner("Finding similar jobs..."):
-                    st.session_state.similar_jobs[job_key] = scrape_similar_jobs(job["title"], job["company"])
-            similar = st.session_state.similar_jobs.get(job_key, [])
-            if similar:
-                with st.expander(f"🔗 Similar Jobs on LinkedIn ({len(similar)})", expanded=False):
-                    for sj in similar:
-                        if sj.get("url"):
-                            st.markdown(f"- **{sj['title']}** — *{sj['company']}*  [View]({sj['url']})")
-                        else:
-                            st.markdown(f"- **{sj['title']}** — *{sj['company']}*")
+        # ── Similar Jobs ──
+        if "similar_jobs" not in st.session_state:
+            st.session_state.similar_jobs = {}
+        job_key = job.get("url", "") + job.get("title", "")
+        if job_key not in st.session_state.similar_jobs:
+            with st.spinner("Finding similar jobs..."):
+                st.session_state.similar_jobs[job_key] = scrape_similar_jobs(job["title"], job["company"])
+        similar = st.session_state.similar_jobs.get(job_key, [])
+        if similar:
+            with st.expander(f"🔗 Similar Jobs on LinkedIn ({len(similar)})", expanded=False):
+                for sj in similar:
+                    if sj.get("url"):
+                        st.markdown(f"- **{sj['title']}** — *{sj['company']}*  [View]({sj['url']})")
+                    else:
+                        st.markdown(f"- **{sj['title']}** — *{sj['company']}*")
+
         # ── Glassdoor Panel ──
         with st.expander("🏢 Company Info", expanded=False):
             if "glassdoor_cache" not in st.session_state:
@@ -1420,7 +1408,6 @@ def main():
                             else:
                                 rate, missing = tailor_resume_simple(st.session_state.resume_text, job)
                                 st.session_state.analysis = f"**Keyword Match: {rate:.0f}%**\n\nMissing: {', '.join(missing[:10])}"
-                                st.session_state.missing
                         else:
                             rate, missing = tailor_resume_simple(st.session_state.resume_text, job)
                             st.session_state.analysis = f"**Keyword Match: {rate:.0f}%**\n\nMissing: {', '.join(missing[:10])}"
