@@ -24,43 +24,12 @@ st.markdown("""
 a[href*="/creators/"], a[href*="github"],
 iframe[src*="github"], div:has(> a[href*="github"])
 {display:none !important;}
-
 header { background: transparent !important; }
 [data-testid="collapsedControl"] { position: fixed; top: 12px; left: 10px; z-index: 99998; }
-
-/* ── Dark Mode ── */
-body.dark { --bg: #0e1117; --fg: #fafafa; --card: #1a1c24; --border: #333; }
-body.dark [data-testid="stAppViewContainer"] { background: var(--bg) !important; }
-body.dark .stMarkdown, body.dark h1, body.dark h2, body.dark h3,
-body.dark h4, body.dark h5, body.dark h6, body.dark p, body.dark li,
-body.dark span, body.dark label, body.dark div:not([data-testid]) {
-    color: var(--fg) !important; }
-body.dark [data-testid="stExpander"] { background: var(--card) !important; border-color: var(--border) !important; }
-body.dark [data-testid="stExpander"] summary { color: var(--fg) !important; }
-body.dark .stTextInput input, body.dark .stTextArea textarea,
-body.dark [data-testid="stSelectbox"] div {
-    background: var(--card) !important; color: var(--fg) !important; border-color: var(--border) !important; }
-body.dark button[kind="secondary"] { background: #2d3143 !important; color: var(--fg) !important; border-color: #444 !important; }
-body.dark [data-testid="stMetricValue"] { color: var(--fg) !important; }
-body.dark [data-testid="stMetricLabel"], body.dark .stCaption { color: #aaa !important; }
-body.dark [data-testid="stProgress"] > div { background: #333 !important; }
-body.dark hr { border-color: #333 !important; }
-body.dark .stAlert { background: var(--card) !important; }
-body.dark [data-testid="stSidebar"] { background: #0a0b10 !important; }
-body.dark [data-testid="stSidebar"] * { color: var(--fg) !important; }
-
-/* ── Dark Mode Toggle Button ── */
-#_dm_btn { position:fixed; top:10px; right:16px; z-index:99999;
-    background:#f0f0f0; border:1px solid #ccc; border-radius:20px;
-    padding:5px 12px; cursor:pointer; font-size:15px; }
-body.dark #_dm_btn { background:#333; color:#fff; border-color:#555; }
 </style>
-
-<div id="_dm_btn" onclick="var b=document.body;b.classList.toggle('dark');var d=b.classList.contains('dark');this.textContent=d?'☀️':'🌙';localStorage.setItem('_dm',d?'1':'0')">🌙</div>
-<script>
-(function(){ if(localStorage.getItem('_dm')==='1'){ document.body.classList.add('dark'); var b=document.getElementById('_dm_btn'); if(b)b.textContent='☀️'; } })();
-</script>
 <div id="_x_hide_branding" style="display:none;"></div>
+""", unsafe_allow_html=True)
+
 """, unsafe_allow_html=True)
 
 
