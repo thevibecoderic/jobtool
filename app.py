@@ -19,11 +19,14 @@ st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide", in
 # Hide Streamlit branding
 st.markdown("""
 <style>
-header, footer, [data-testid="stFooter"],
+[data-testid="stToolbar"], footer, [data-testid="stFooter"],
 .viewerBadge_container__1QSob,
 a[href*="/creators/"], a[href*="github"],
 iframe[src*="github"], div:has(> a[href*="github"])
 {display:none !important;}
+
+header { background: transparent !important; }
+[data-testid="collapsedControl"] { position: fixed; top: 12px; left: 10px; z-index: 99998; }
 
 /* ── Dark Mode ── */
 body.dark { --bg: #0e1117; --fg: #fafafa; --card: #1a1c24; --border: #333; }
