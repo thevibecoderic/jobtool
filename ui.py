@@ -810,6 +810,19 @@ Keep it concise."""
 
 
 def generate_tailored_resume(resume, job):
+    # Build section list from user's checkbox preferences (default: no certs)
+    sections = ["NAME: [Full Name from resume]"]
+    if st.session_state.get("sec_summary", True):
+        sections.append("SUMMARY: [2-3 sentence professional summary tailored to this role]")
+    if st.session_state.get("sec_skills", True):
+        sections.append("SKILLS: [comma-separated skills, prioritize those matching the job]")
+    if st.session_state.get("sec_experience", True):
+        sections.append("EXPERIENCE: [keep same roles, rewrite bullets to match job keywords]")
+    if st.session_state.get("sec_education", True):
+        sections.append("EDUCATION: [keep as-is]")
+    if st.session_state.get("sec_certs", False):
+        sections.append("CERTIFICATIONS: [keep as-is, if any]")
+    
     prompt = f"""Job Title: {job['title']}
 Company: {job['company']}
 Job Description: {job.get('description','')[:2000]}
@@ -818,14 +831,9 @@ Requirements: {job.get('requirements','')[:1000]}
 My current resume:
 {resume[:3000]}
 
-Rewrite my resume to be tailored for this specific job. Do NOT invent experience I don't have — rephrase, reorder, and emphasize relevant skills/experience already in my resume. Use these section headers exactly:
+Rewrite my resume to be tailored for this specific job. Do NOT invent experience I don't have — rephrase, reorder, and emphasize relevant skills/experience already in my resume. Include ONLY these sections in this exact order:
 
-NAME: [Full Name from resume]
-SUMMARY: [2-3 sentence professional summary tailored to this role]
-SKILLS: [comma-separated skills, prioritize those matching the job]
-EXPERIENCE: [keep same roles, rewrite bullets to match job keywords]
-EDUCATION: [keep as-is]
-CERTIFICATIONS: [keep as-is, if any]
+{chr(10).join(sections)}
 
 Return the full rewritten resume with those exact headers."""
     return call_deepseek(prompt, "You are a professional resume writer. Be honest — only use information from the original resume.", max_tokens=1500)
@@ -899,6 +907,33 @@ def _sanitize(text):
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
+def _wrap_text(pdf, text, width, lh):
+    """Write text with word-wrapping, breaking long words if needed."""
+    words = text.split(' ')
+    line = ''
+    for word in words:
+        test = f"{line} {word}".strip() if line else word
+        if pdf.get_string_width(test) <= width:
+            line = test
+        else:
+            if line:
+                pdf.cell(width, lh, line, ln=True)
+            # If single word still too long, break it
+            while pdf.get_string_width(word) > width:
+                for i in range(len(word), 0, -1):
+                    if pdf.get_string_width(word[:i] + '-') <= width:
+                        pdf.cell(width, lh, word[:i] + '-', ln=True)
+                        word = word[i:]
+                        break
+                else:
+                    mid = len(word) // 2
+                    pdf.cell(width, lh, word[:mid], ln=True)
+                    word = word[mid:]
+            line = word
+    if line:
+        pdf.cell(width, lh, line, ln=True)
+
+
 def build_pdf(tailored_text):
     """Build a clean PDF resume using fpdf2. Returns BytesIO or None on failure."""
     if not tailored_text:
@@ -911,49 +946,39 @@ def build_pdf(tailored_text):
         pdf = FPDF("P", "mm", "A4")
         pdf.add_page()
         pdf.set_auto_page_break(auto=True, margin=15)
-        margin = 15
-        pw = pdf.w - margin * 2
+        pdf.set_left_margin(15)
+        pdf.set_right_margin(15)  # ensures right boundary
+        pw = pdf.w - 30
         lh = 4.5
 
         lines = tailored_text.split('\n')
         for line in lines:
             line = line.strip()
             if not line:
-                pdf.ln(3)
+                pdf.ln(2)
                 continue
 
-            if line.startswith("NAME:"):
-                pdf.set_font("Helvetica", "B", 18)
-                pdf.multi_cell(pw, 10, _sanitize(line.replace("NAME:", "").strip()), align="C")
-                pdf.ln(2)
-            elif any(line.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
-                pdf.ln(2)
-                parts = line.split(":", 1)
-                label = _sanitize(parts[0]) + ":"
-                if len(parts) > 1 and parts[1].strip():
-                    body = "  " + _sanitize(parts[1].strip())
-                    pdf.set_font("Helvetica", "B", 11)
-                    w = pdf.get_string_width(label)
-                    pdf.cell(w + 1, 7, label)
-                    pdf.set_font("Helvetica", "", 9)
-                    x0 = pdf.get_x()
-                    remaining_w = pw - (x0 - margin)
-                    if remaining_w < 30:
-                        pdf.ln(7)
-                        pdf.multi_cell(pw, lh, body)
-                    else:
-                        pdf.multi_cell(remaining_w, lh, body)
-                else:
-                    pdf.set_font("Helvetica", "B", 11)
-                    pdf.multi_cell(pw, 7, label)
-                pdf.ln(2)
-            elif line.startswith("- "):
+            safe = _sanitize(line)
+
+            if safe.startswith("NAME:"):
+                pdf.set_font("Helvetica", "B", 16)
+                pdf.cell(pw, 8, safe.replace("NAME:", "").strip(), align="C", ln=True)
+                pdf.ln(3)
+
+            elif any(safe.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
+                pdf.ln(3)
+                pdf.set_font("Helvetica", "B", 11)
+                pdf.cell(pw, 6, safe, ln=True)
+                pdf.ln(1)
+
+            elif safe.startswith("- "):
                 pdf.set_font("Helvetica", "", 9)
-                text = "  - " + _sanitize(line[2:].strip())
-                pdf.multi_cell(pw, lh, text)
+                pdf.set_x(20)
+                _wrap_text(pdf, "- " + safe[2:].strip(), pw - 5, lh)
+
             else:
                 pdf.set_font("Helvetica", "", 9)
-                pdf.multi_cell(pw, lh, _sanitize(line))
+                _wrap_text(pdf, safe, pw, lh)
 
         buf = io.BytesIO()
         pdf_data = pdf.output(dest="S")
@@ -964,6 +989,7 @@ def build_pdf(tailored_text):
         return buf
     except Exception as e:
         return f"pdf_error:{e}"
+
 
 
 # ── Interview ─────────────────────────────────────────
@@ -1333,6 +1359,19 @@ def main():
         if "resume_text" not in st.session_state or not st.session_state.resume_text:
             st.warning("Upload your resume in the sidebar first")
         else:
+            st.caption("Select sections to include:")
+            sc1, sc2, sc3, sc4, sc5 = st.columns(5)
+            with sc1:
+                st.session_state["sec_summary"] = st.checkbox("Summary", True, key="cb_summary")
+            with sc2:
+                st.session_state["sec_skills"] = st.checkbox("Skills", True, key="cb_skills")
+            with sc3:
+                st.session_state["sec_experience"] = st.checkbox("Experience", True, key="cb_experience")
+            with sc4:
+                st.session_state["sec_education"] = st.checkbox("Education", True, key="cb_education")
+            with sc5:
+                st.session_state["sec_certs"] = st.checkbox("Certifications", False, key="cb_certs")
+
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("🔍 Analyze Fit (quick)", use_container_width=True):
@@ -1367,12 +1406,36 @@ def main():
 
             if "tailored_text" in st.session_state and st.session_state.tailored_text:
                 st.divider()
+                # ── Resume Diff Preview ──
+                if st.session_state.get("resume_text"):
+                    with st.expander("🔍 See Changes (Original → Tailored)", expanded=False):
+                        import difflib
+                        orig_lines = st.session_state.resume_text.splitlines()
+                        new_lines = st.session_state.tailored_text.splitlines()
+                        diff = difflib.unified_diff(orig_lines, new_lines, 
+                                                    fromfile='Original', tofile='Tailored',
+                                                    lineterm='')
+                        diff_text = []
+                        for dline in diff:
+                            if dline.startswith('+'):
+                                diff_text.append(f'<span style="background:#d4edda;color:#155724">  {dline}  </span>')
+                            elif dline.startswith('-'):
+                                diff_text.append(f'<span style="background:#f8d7da;color:#721c24">  {dline}  </span>')
+                            elif dline.startswith('@@'):
+                                diff_text.append(f'<span style="color:#6c757d;font-size:0.8em">{dline}</span>')
+                            else:
+                                diff_text.append(dline)
+                        st.markdown('<br>'.join(diff_text[:100]), unsafe_allow_html=True)
+                        st.caption("Green = added | Red = removed")
+
                 st.subheader("✨ Tailored Resume Preview")
                 st.markdown(st.session_state.tailored_text)
 
                 company_slug = re.sub(r'[^a-zA-Z0-9]', '_', job['company'])[:20]
-                fname_base = f"resume_tailored_{company_slug}_{job['title'][:30].replace(' ','_')}"
-
+                role_slug = job['title'][:30].replace(' ', '_')
+                orig_name = st.session_state.get('resume_filename', 'resume')
+                orig_base = re.sub(r'\.[^.]+$', '', orig_name)
+                fname_base = f'{orig_base} - {company_slug} - {role_slug}'
                 dl1, dl2 = st.columns(2)
                 with dl1:
                     docx_buf = build_docx(st.session_state.tailored_text)
@@ -1398,7 +1461,6 @@ def main():
                             st.caption(f"PDF error: {pdf_buf}")
                         else:
                             st.caption("PDF unavailable — install fpdf2: `pip install fpdf2`")
-
     with tab3:
         st.subheader("Interview Questions")
         if st.button("🎲 Generate Questions", type="primary"):
