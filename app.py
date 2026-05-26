@@ -19,21 +19,15 @@ st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 # Hide Streamlit branding
 st.markdown("""
 <style>
-header > div:first-child, header [data-testid="stToolbar"], footer, [data-testid="stFooter"],
+header [data-testid="stToolbar"], footer, [data-testid="stFooter"],
 .viewerBadge_container__1QSob,
 a[href*="/creators/"], a[href*="github"],
 iframe[src*="github"], div:has(> a[href*="github"])
 {display:none !important;}
 
-/* Invisible header — needed so collapsedControl renders */
-header { height: 0 !important; min-height: 0 !important; overflow: visible !important; background: transparent !important; }
-[data-testid="collapsedControl"] {
-    display: flex !important;
-    position: fixed;
-    top: 12px;
-    left: 10px;
-    z-index: 99998;
-}
+/* Invisible header — visibility:hidden keeps it rendered so collapsedControl works */
+header { visibility: hidden !important; height: 0 !important; min-height: 0 !important; overflow: visible !important; background: transparent !important; pointer-events: none; }
+header [data-testid="collapsedControl"] { visibility: visible !important; pointer-events: auto; display: flex !important; position: fixed; top: 12px; left: 10px; z-index: 99998; }
 
 /* ── Dark Mode ── */
 body.dark { --bg: #0e1117; --fg: #fafafa; --card: #1a1c24; --border: #333; }
@@ -78,7 +72,7 @@ body.dark ._tb { background:#333; color:#fff; border-color:#555; }
     if(m==='dark'){m='light';b.classList.remove('dark');}
     else if(m==='light'){m='system';}
     else{m='dark';b.classList.add('dark');}
-    localStorage.setItem('_dm',m);_udm(m);
+    localStorage.setItem('_dm',m);_applyDm();
 })()" title="Theme">🌙</div>
 
 <script>
