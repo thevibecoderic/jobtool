@@ -14,6 +14,14 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 
+# Hide Streamlit branding + GitHub corner
+st.markdown("""
+<style>
+#MainMenu, header, footer {visibility: hidden;}
+.stDeployButton {display:none;}
+</style>
+""", unsafe_allow_html=True)
+
 # ── Config ────────────────────────────────────────────
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
