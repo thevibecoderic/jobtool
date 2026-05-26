@@ -31,7 +31,7 @@ pip install -r requirements.txt
 # Add your DeepSeek API key
 echo 'DEEPSEEK_API_KEY=sk-your-key-here' > .env
 
-streamlit run ui.py
+streamlit run app.py
 ```
 
 
