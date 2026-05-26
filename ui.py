@@ -1078,13 +1078,32 @@ def _extract_company(text, use_ai=True):
     return "Unknown"
 
 
+def _replace_para_text(para, new_text):
+    """Replace all text in a paragraph while preserving run formatting."""
+    if not para.runs:
+        para.add_run(new_text)
+        return
+    for run in para.runs:
+        run.text = ""
+    para.runs[0].text = new_text
+
+
+def _clear_para(para):
+    """Clear all text from a paragraph's runs."""
+    for run in para.runs:
+        run.text = ""
+
+
 def build_tailored_docx(original_bytes, tailored_text):
-    """Edit the original DOCX file in-place with tailored content, preserving formatting."""
+    """Edit the original DOCX file in-place with tailored content, preserving all formatting."""
     try:
         from docx import Document as DocxDocument
         from io import BytesIO
+        import copy as _copy
 
         doc = DocxDocument(BytesIO(original_bytes))
+
+        # Parse tailored text into sections
         sections = {}
         current_section = "OTHER"
         for line in tailored_text.split('\n'):
@@ -1100,74 +1119,81 @@ def build_tailored_docx(original_bytes, tailored_text):
             else:
                 sections[current_section] = sections.get(current_section, "") + "\n" + line
 
-        section_order = ["NAME", "SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "CERTIFICATIONS"]
-        current_sec = None
-        content_placed = set()
-        pending_sec = None
+        SECTION_HEADERS = {"NAME", "SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "CERTIFICATIONS"}
+        SECTION_ORDER = ["NAME", "SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "CERTIFICATIONS"]
 
-        for para in doc.paragraphs:
+        # ── Pass 1: group original paragraphs by section ──
+        # Each group = {"header_idx": int, "body_idxs": [int, ...]}
+        sec_groups = {}  # section_name -> group dict
+        current_sec = None
+        pending_body = []
+
+        for i, para in enumerate(doc.paragraphs):
             text = para.text.strip()
             if not text:
+                if current_sec and pending_body:
+                    # Empty line mid-section — keep it as separator if body has content
+                    pass
                 continue
 
-            upper_text = text.upper()
-            matched_sec = None
-            for sec in section_order:
-                if upper_text.startswith(sec + ":") or upper_text == sec:
-                    matched_sec = sec
+            upper = text.upper()
+            matched = None
+            for sec in SECTION_ORDER:
+                if upper.startswith(sec + ":") or upper == sec:
+                    matched = sec
                     break
 
-            if matched_sec:
-                current_sec = matched_sec
-                if matched_sec == "NAME" and "NAME" in sections:
-                    for run in para.runs:
-                        run.text = ""
-                    name_text = f"NAME: {sections['NAME']}" if sections['NAME'] else "NAME:"
-                    if para.runs:
-                        para.runs[0].text = name_text
-                    else:
-                        para.add_run(name_text)
-                    content_placed.add("NAME")
-                elif matched_sec in sections:
-                    for run in para.runs:
-                        run.text = ""
-                    if para.runs:
-                        para.runs[0].text = f"{matched_sec}:"
-                    else:
-                        para.add_run(f"{matched_sec}:")
-                    pending_sec = matched_sec
+            if matched:
+                # Store previous section's body paragraphs
+                if current_sec and current_sec in sec_groups:
+                    sec_groups[current_sec]["body_idxs"] = pending_body
+                current_sec = matched
+                pending_body = []
+                sec_groups[matched] = {"header_idx": i, "body_idxs": []}
+            elif current_sec:
+                pending_body.append(i)
+
+        # Store last section's body
+        if current_sec and current_sec in sec_groups:
+            sec_groups[current_sec]["body_idxs"] = pending_body
+
+        # ── Pass 2: replace text (reverse order so clones don't shift unprocessed indices) ──
+        for sec in reversed(SECTION_ORDER):
+            if sec not in sections or sec not in sec_groups:
                 continue
 
-            # Body paragraph: place section content in first body para after header
-            if pending_sec and pending_sec in sections:
-                for run in para.runs:
-                    run.text = ""
-                if para.runs:
-                    para.runs[0].text = sections[pending_sec]
-                else:
-                    para.add_run(sections[pending_sec])
-                content_placed.add(pending_sec)
-                pending_sec = None
-            elif current_sec and current_sec in content_placed:
-                # Extra body paragraphs that no longer have content — clear them
-                for run in para.runs:
-                    run.text = ""
+            group = sec_groups[sec]
+            content = sections[sec]
+            content_lines = [l.strip() for l in content.split('\n') if l.strip()]
 
-        # Append any sections not present in the original doc
-        for sec in section_order:
-            if sec in sections and sec not in content_placed:
-                p = doc.add_paragraph()
-                if sec == "NAME":
-                    run = p.add_run(f"NAME: {sections['NAME']}")
-                    run.bold = True
-                    run.font.size = Pt(18)
-                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            # Replace header paragraph
+            header_para = doc.paragraphs[group["header_idx"]]
+            if sec == "NAME":
+                _replace_para_text(header_para, f"NAME: {content}" if content else "NAME:")
+            else:
+                _replace_para_text(header_para, f"{sec}:")
+
+            # Map new lines to original body paragraphs
+            body_idxs = group["body_idxs"]
+            for j, line in enumerate(content_lines):
+                if j < len(body_idxs):
+                    _replace_para_text(doc.paragraphs[body_idxs[j]], line)
                 else:
-                    run = p.add_run(f"{sec}:")
-                    run.bold = True
-                    run.font.size = Pt(13)
-                    if sections[sec]:
-                        p.add_run("  " + sections[sec])
+                    # More new lines than original paragraphs — clone the last body paragraph
+                    template = doc.paragraphs[body_idxs[-1]] if body_idxs else header_para
+                    clone_elem = _copy.deepcopy(template._element)
+                    # Update text in the cloned element's runs
+                    for r_elem in clone_elem.iter():
+                        if r_elem.tag.endswith('}t'):  # w:t elements (text runs)
+                            r_elem.text = ""
+                    first_t = clone_elem.find('.//{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t')
+                    if first_t is not None:
+                        first_t.text = line
+                    template._element.addnext(clone_elem)
+
+            # Clear extra original paragraphs
+            for j in range(len(content_lines), len(body_idxs)):
+                _clear_para(doc.paragraphs[body_idxs[j]])
 
         buf = BytesIO()
         doc.save(buf)
