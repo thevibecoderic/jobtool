@@ -57,7 +57,10 @@ def _load_env():
     except Exception:
         pass
     # Local .env fallback
-    script_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        script_dir = os.getcwd()
     env_path = os.path.join(script_dir, ".env")
     try:
         with open(env_path) as f:
@@ -82,6 +85,8 @@ def detect_mode(desc):
     d = desc.lower()
     if "remote" in d:
         return "🏠 Remote" if "hybrid" not in d else "🏢🏠 Hybrid"
+    if "hybrid" in d:
+        return "🏢🏠 Hybrid"
     return "🏢 In-office"
 
 
@@ -99,7 +104,7 @@ def call_deepseek(prompt, system="You are a helpful career coach.", max_tokens=8
         }, timeout=45)
         if r.status_code == 200:
             return r.json()["choices"][0]["message"]["content"]
-    except:
+    except Exception:
         pass
     return None
 
@@ -177,15 +182,18 @@ def _to_monthly(salary_str):
     """Convert an annual salary string like 'SGD 60,000 - 90,000' to monthly 'SGD 5,000 - 7,500/mo'."""
     if not salary_str:
         return salary_str
+    already_monthly = bool(re.search(r'/mo|/month|per month', salary_str, re.I))
     nums = re.findall(r'([\d,]+)', salary_str)
     if not nums:
         return salary_str
     converted = []
     for n in nums:
         try:
-            val = int(n.replace(',', '')) // 12
+            val = int(n.replace(',', ''))
+            if not already_monthly:
+                val = val // 12
             converted.append(f"{val:,}")
-        except:
+        except Exception:
             converted.append(n)
     if len(converted) >= 2:
         return f"SGD {converted[0]} - {converted[1]}/mo"
@@ -361,11 +369,15 @@ def _parse_embedded(soup):
         if date_posted and date_posted.isdigit() and len(date_posted) >= 10:
             try:
                 import datetime
-                ts = int(date_posted) / 1000 if len(date_posted) > 10 else int(date_posted)
+                ts_digits = int(date_posted)
+                if ts_digits > 1_000_000_000_000:  # milliseconds (13+ digits)
+                    ts = ts_digits / 1000
+                else:
+                    ts = ts_digits
                 dt = datetime.datetime.fromtimestamp(ts)
                 days_ago = (datetime.datetime.now() - dt).days
                 date_posted = f"{days_ago} days ago" if days_ago > 0 else "Today"
-            except:
+            except Exception:
                 pass
 
         if title == "Untitled" and not desc:
@@ -429,21 +441,37 @@ def _parse_embedded(soup):
                     eq = after.find("{", eq)
                 if eq == -1:
                     continue
-                # extract JSON by brace matching
+                # extract JSON by brace matching (skip chars inside strings)
                 depth_count = 0
                 end = eq
+                in_string = False
+                esc = False
                 for i, ch in enumerate(after[eq:], eq):
-                    if ch == "{":
-                        depth_count += 1
-                    elif ch == "}":
-                        depth_count -= 1
-                        if depth_count == 0:
-                            end = i + 1
-                            break
+                    if esc:
+                        esc = False
+                        continue
+                    if ch == '\\':
+                        esc = True
+                        continue
+                    if ch == '"' and not in_string:
+                        in_string = True
+                    elif ch == '"' and in_string:
+                        in_string = False
+                    elif not in_string:
+                        if ch == "{":
+                            depth_count += 1
+                        elif ch == "}":
+                            depth_count -= 1
+                            if depth_count == 0:
+                                end = i + 1
+                                break
                 if end <= eq:
                     continue
                 raw = after[eq:end]
-                data = json.loads(raw)
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
                 def walk2(obj, d=0):
                     if d > 20:
                         return
@@ -774,16 +802,23 @@ def _try_read_doc(uploaded_file):
     result = '\n'.join(lines)
     if len(result) > 50:
         return result
+    tmp_path = None
     try:
         import subprocess
         with tempfile.NamedTemporaryFile(suffix='.doc', delete=False) as tf:
+            tmp_path = tf.name
             tf.write(content)
             tf.flush()
-            out = subprocess.check_output(['antiword', tf.name], timeout=10)
-            os.unlink(tf.name)
-            return out.decode("utf-8", errors="ignore").strip()
-    except:
+        out = subprocess.check_output(['antiword', tmp_path], timeout=10)
+        return out.decode("utf-8", errors="ignore").strip()
+    except Exception:
         pass
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     return result if len(result) > 50 else ""
 
 
@@ -1048,9 +1083,8 @@ def build_tailored_docx(original_bytes, tailored_text):
     try:
         from docx import Document as DocxDocument
         from io import BytesIO
-        
+
         doc = DocxDocument(BytesIO(original_bytes))
-        # Parse tailored text into sections
         sections = {}
         current_section = "OTHER"
         for line in tailored_text.split('\n'):
@@ -1065,39 +1099,76 @@ def build_tailored_docx(original_bytes, tailored_text):
                 sections[current_section] = parts[1].strip() if len(parts) > 1 else ""
             else:
                 sections[current_section] = sections.get(current_section, "") + "\n" + line
-        
-        # Walk through paragraphs and replace content by section
+
         section_order = ["NAME", "SUMMARY", "SKILLS", "EXPERIENCE", "EDUCATION", "CERTIFICATIONS"]
-        section_idx = 0
-        found_name = False
-        
+        current_sec = None
+        content_placed = set()
+        pending_sec = None
+
         for para in doc.paragraphs:
             text = para.text.strip()
             if not text:
                 continue
-            
-            # Detect section by bold/header patterns
+
             upper_text = text.upper()
+            matched_sec = None
             for sec in section_order:
                 if upper_text.startswith(sec + ":") or upper_text == sec:
-                    if sec in sections and sections[sec]:
-                        # Replace the section header + content
-                        new_text = f"{sec}: {sections[sec]}"
-                        # Clear paragraph and set new text, preserving formatting
-                        for run in para.runs:
-                            run.text = ""
-                        if para.runs:
-                            para.runs[0].text = new_text
-                        else:
-                            para.add_run(new_text)
-                    section_idx = section_order.index(sec) + 1
-                    found_name = (sec == "NAME")
+                    matched_sec = sec
                     break
-            else:
-                # Body text under current section — append to first non-header paragraph
-                if section_idx > 0 and not found_name:
-                    pass  # Skip body text replacement for now (complex)
-        
+
+            if matched_sec:
+                current_sec = matched_sec
+                if matched_sec == "NAME" and "NAME" in sections:
+                    for run in para.runs:
+                        run.text = ""
+                    name_text = f"NAME: {sections['NAME']}" if sections['NAME'] else "NAME:"
+                    if para.runs:
+                        para.runs[0].text = name_text
+                    else:
+                        para.add_run(name_text)
+                    content_placed.add("NAME")
+                elif matched_sec in sections:
+                    for run in para.runs:
+                        run.text = ""
+                    if para.runs:
+                        para.runs[0].text = f"{matched_sec}:"
+                    else:
+                        para.add_run(f"{matched_sec}:")
+                    pending_sec = matched_sec
+                continue
+
+            # Body paragraph: place section content in first body para after header
+            if pending_sec and pending_sec in sections:
+                for run in para.runs:
+                    run.text = ""
+                if para.runs:
+                    para.runs[0].text = sections[pending_sec]
+                else:
+                    para.add_run(sections[pending_sec])
+                content_placed.add(pending_sec)
+                pending_sec = None
+            elif current_sec and current_sec in content_placed:
+                # Extra body paragraphs that no longer have content — clear them
+                for run in para.runs:
+                    run.text = ""
+
+        # Append any sections not present in the original doc
+        for sec in section_order:
+            if sec in sections and sec not in content_placed:
+                p = doc.add_paragraph()
+                if sec == "NAME":
+                    run = p.add_run(f"NAME: {sections['NAME']}")
+                    run.bold = True
+                    run.font.size = Pt(18)
+                    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                else:
+                    run = p.add_run(f"{sec}:")
+                    run.bold = True
+                    run.font.size = Pt(13)
+                    if sections[sec]:
+                        p.add_run("  " + sections[sec])
+
         buf = BytesIO()
         doc.save(buf)
         buf.seek(0)
@@ -1108,7 +1179,7 @@ def build_tailored_docx(original_bytes, tailored_text):
 
 def scrape_similar_jobs(job_title, company, max_jobs=5):
     """Find similar jobs on LinkedIn by searching with the same title."""
-    query = urllib.parse.quote(f"{job_title} -{company}")
+    query = urllib.parse.quote(f"{job_title} NOT {company}", safe=" ")
     url = f"https://www.linkedin.com/jobs/search/?keywords={query}&location=Singapore&f_TPR=r1209600&position=1&pageNum=0"
     try:
         resp = requests.get(url, headers=GOOGLEBOT_HEADERS, timeout=15)
@@ -1237,7 +1308,6 @@ def main():
 
     if kw or company_filter.strip():
         if st.button("🔍 Find Jobs", type="primary", use_container_width=True):
-            st.session_state.jobs = None
             st.session_state.job_idx = 0
             st.session_state.glassdoor_cache = {}
             st.session_state.custom_job = None
@@ -1245,7 +1315,7 @@ def main():
                 st.session_state.jobs = scrape_linkedin(search_query, max_jobs)
             st.rerun()
 
-    if "jobs" not in st.session_state:
+    if "jobs" not in st.session_state or st.session_state.jobs is None:
         return
     if not st.session_state.jobs:
         st.warning("No jobs found — try different keywords or a broader search.")
@@ -1301,7 +1371,7 @@ def main():
     st.divider()
     info_col, link_col = st.columns([6, 1.4])
     with info_col:
-        st.markdown(f"## {job['title']}")
+        st.markdown(f"## {re.sub(r'([#*_`~\\[\\]<>])', lambda m: '\\' + m.group(1), job['title'])}")
         card_meta = [f"**{job['company']}**", job.get('mode', '')]
         if job.get("date_posted"):
             card_meta.append(f"🕒 {job['date_posted']}")
