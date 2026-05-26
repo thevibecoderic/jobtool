@@ -202,17 +202,19 @@ def _to_monthly(salary_str):
     return salary_str
 
 
-def guess_company_info(company_name, job_title=""):
+def guess_company_info(company_name, job_title="", jd_text=""):
     """Use DeepSeek to estimate company rating + monthly salary when Glassdoor is unavailable."""
     if not DEEPSEEK_KEY:
         return None
     prompt = f"""Company: {company_name}
 Role: {job_title}
 Location: Singapore
+Job Description: {jd_text[:2000]}
 
-Based on your knowledge of this company and similar roles in Singapore, estimate:
+Based on the company, role, and job description above, estimate:
 1. Company rating out of 5 (based on general reputation)
-2. Estimated MONTHLY salary range in SGD for this role (e.g. "SGD 5,000 - 8,000/mo")
+2. Estimated MONTHLY salary range in SGD for this specific role (e.g. "SGD 5,000 - 8,000/mo")
+Factor in the seniority level, skills required, and responsibilities from the JD.
 
 Format your answer exactly like this:
 Rating: X.X/5
@@ -1523,7 +1525,7 @@ def main():
             company_key = job["company"]
             gd2 = st.session_state.glassdoor_cache.get(company_key)
             # Always try JD salary extraction
-            jd_salary = extract_salary_from_jd(job.get("description", ""))
+            jd_salary = extract_salary_from_jd(job.get("description", "") + " " + job.get("requirements", ""))
             if jd_salary:
                 st.metric("Salary in JD", jd_salary)
 
@@ -1532,7 +1534,7 @@ def main():
                 if DEEPSEEK_KEY:
                     if st.button("🤖 Estimate Salary (AI)", key=f"gd_ai_{company_key}_{idx}"):
                         with st.spinner("Estimating..."):
-                            ai = guess_company_info(company_key, job.get("title", ""))
+                            ai = guess_company_info(company_key, job.get("title", ""), job.get("description", ""))
                             if ai:
                                 st.session_state.glassdoor_cache[company_key] = ai
                                 st.rerun()
@@ -1552,7 +1554,7 @@ def main():
                     with st.spinner("Searching Glassdoor..."):
                         gd_result = lookup_glassdoor(company_key)
                         if gd_result and gd_result.get("error") and DEEPSEEK_KEY:
-                            ai = guess_company_info(company_key, job.get("title", ""))
+                            ai = guess_company_info(company_key, job.get("title", ""), job.get("description", ""))
                             if ai:
                                 gd_result = ai
                         st.session_state.glassdoor_cache[company_key] = gd_result
