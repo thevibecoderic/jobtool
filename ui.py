@@ -17,11 +17,11 @@ st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 # Hide Streamlit branding and GitHub links (keeping Fork + Record buttons visible)
 st.markdown("""
 <style>
-header, footer,
+footer,
 [data-testid="stFooter"],
 .viewerBadge_container__1QSob,
 a[href*="/creators/"], a[href*="github"],
-iframe[src*="github"], div:has(> a[href*="github"])
+iframe[src*="github"]
 {display:none !important;}
 </style>
 """, unsafe_allow_html=True)
