@@ -764,19 +764,65 @@ def get_job_details(job_url):
     return "", ""
 
 
+def extract_salary_from_jd(text):
+    """Extract salary range from job description text. Returns formatted string or None."""
+    if not text:
+        return None
+    # Monthly range: SGD/S$ X,XXX - X,XXX /mo or /month
+    m = re.search(r'(?:SGD|S\$)\s*([\d,]+)\s*(?:–|-|to)\s*(?:SGD|S\$)?\s*([\d,]+)\s*(?:/mo|/month|per\s+month)', text, re.I)
+    if m:
+        return f"SGD {m.group(1)} - {m.group(2)}/mo"
+    # Annual range: SGD/S$ X,XXX - X,XXX /yr or /year or /annum
+    m = re.search(r'(?:SGD|S\$)\s*([\d,]+)\s*(?:–|-|to)\s*(?:SGD|S\$)?\s*([\d,]+)\s*(?:/yr|/year|per\s+year|/annum|per\s+annum)', text, re.I)
+    if m:
+        v1 = round(int(m.group(1).replace(',', '')) / 12)
+        v2 = round(int(m.group(2).replace(',', '')) / 12)
+        return f"SGD {v1:,} - {v2:,}/mo"
+    # $Xk - $Yk range
+    m = re.search(r'\$(\d+)k\s*(?:–|-|to)\s*\$(\d+)k', text, re.I)
+    if m:
+        v1 = int(m.group(1)) * 1000 // 12
+        v2 = int(m.group(2)) * 1000 // 12
+        return f"SGD {v1:,} - {v2:,}/mo"
+    # Single monthly: SGD/S$ X,XXX/mo
+    m = re.search(r'(?:SGD|S\$)\s*([\d,]+)\s*(?:/mo|/month)', text, re.I)
+    if m:
+        return f"SGD {m.group(1)}/mo"
+    # Range near salary keywords
+    m = re.search(r'(?:salary|compensation|pay|remuneration).{0,80}?([\d,]+)\s*(?:–|-|to)\s*([\d,]+)', text, re.I)
+    if m:
+        v1 = int(m.group(1).replace(',', ''))
+        v2 = int(m.group(2).replace(',', ''))
+        if v1 >= 1000 and v2 >= 1000:
+            if v1 > 100000:
+                v1, v2 = round(v1 / 12), round(v2 / 12)
+            return f"SGD {v1:,} - {v2:,}/mo"
+    return None
+
+
 def extract_requirements(text):
-    m = re.search(r'(?:requirement|qualification|what you.{0,15}need|must have|required.{0,10}skill)', text, re.IGNORECASE)
+    if not text:
+        return ""
+    # Section headers commonly used in SG job postings
+    section_pat = r'(?:requirements?|qualifications?|what (?:we|you|we\'re|you\'ll).{0,20}need|must have|required.{0,10}(?:skill|experience)|who (?:you are|we\'re looking for)|(?:your|key) (?:background|skills|qualifications)|what you\'ll bring|we are looking for|you\'ll need|about you|the ideal candidate|minimum qualifications|preferred qualifications|what we\'re looking for)'
+    m = re.search(section_pat, text, re.IGNORECASE)
     if m:
         section = text[m.start():]
         stop = len(section)
-        for kw in ['responsibilities', 'about the role', 'we offer', 'benefits']:
+        for kw in ['responsibilities', 'about the role', 'we offer', 'benefits', 'what we offer', 'why join', 'about us', 'the role', 'job description', 'overview', 'who we are']:
             m2 = re.search(kw, section[80:], re.IGNORECASE)
             if m2:
                 stop = min(stop, 80 + m2.start())
-        return section[:stop].strip()
+        result = section[:stop].strip()
+        if len(result) > 40:
+            return result
+    # Fallback: scan lines for requirement-like content
     lines = text.split('\n')
-    req_lines = [l for l in lines if any(w in l.lower() for w in ['require', 'qualif', 'skill', 'experience', 'degree', 'year'])]
-    return '\n'.join(req_lines[:10]) if req_lines else text[:400]
+    req_keywords = ['require', 'qualif', 'skill', 'experience', 'degree', 'year', 'proficien', 'knowledge of', 'familiar', 'ability to', 'strong', 'excellent', 'background in']
+    req_lines = [l for l in lines if len(l.strip()) > 10 and any(w in l.lower() for w in req_keywords)]
+    if req_lines:
+        return '\n'.join(req_lines[:15])
+    return text[:400]
 
 
 # ── Resume Parse ──────────────────────────────────────
@@ -1383,16 +1429,7 @@ def main():
     # ── Glassdoor: fetch eagerly so the rating shows on the job card ──
     if "glassdoor_cache" not in st.session_state:
         st.session_state.glassdoor_cache = {}
-    company = job["company"]
-    if company not in st.session_state.glassdoor_cache:
-        with st.spinner(f"Looking up {company}..."):
-            gd = lookup_glassdoor(company)
-            if gd and gd.get("error") and DEEPSEEK_KEY:
-                ai = guess_company_info(company, job.get("title", ""))
-                if ai:
-                    gd = ai
-            st.session_state.glassdoor_cache[company] = gd
-    gd = st.session_state.glassdoor_cache.get(company)
+    gd = st.session_state.glassdoor_cache.get(job["company"])
 
     # ── Anchor for scroll-to-top on navigation ──
     st.markdown('<div id="job-top"></div>', unsafe_allow_html=True)
@@ -1481,31 +1518,45 @@ def main():
                     else:
                         st.markdown(f"- **{sj['title']}** — *{sj['company']}*")
 
-        # ── Glassdoor Panel ──
+        # ── Company Info Panel ──
         with st.expander("🏢 Company Info", expanded=False):
-            gd2 = st.session_state.glassdoor_cache.get(job["company"])
+            company_key = job["company"]
+            gd2 = st.session_state.glassdoor_cache.get(company_key)
+            # Always try JD salary extraction
+            jd_salary = extract_salary_from_jd(job.get("description", ""))
+            if jd_salary:
+                st.metric("Salary in JD", jd_salary)
+
             if gd2 and gd2.get("error"):
                 st.caption(gd2["error"])
+                if DEEPSEEK_KEY:
+                    if st.button("🤖 Estimate Salary (AI)", key=f"gd_ai_{company_key}_{idx}"):
+                        with st.spinner("Estimating..."):
+                            ai = guess_company_info(company_key, job.get("title", ""))
+                            if ai:
+                                st.session_state.glassdoor_cache[company_key] = ai
+                                st.rerun()
             elif gd2:
-                c1, c2 = st.columns(2)
-                with c1:
-                    if gd2.get("rating"):
-                        stars = "★" * int(gd2["rating"]) + "☆" * (5 - int(gd2["rating"]))
-                        label = "AI Est. Rating" if gd2.get("ai_guess") else "Glassdoor Rating"
-                        st.metric(label, f"{gd2['rating']:.1f} / 5")
-                        st.caption(stars)
-                    else:
-                        st.caption("No rating found")
-                with c2:
-                    if gd2.get("salary"):
-                        label = "AI Est. Monthly" if gd2.get("ai_guess") else "Est. Monthly Salary"
-                        st.metric(label, gd2["salary"])
-                    else:
-                        st.caption("No salary data")
+                if gd2.get("rating"):
+                    stars = "★" * int(gd2["rating"]) + "☆" * (5 - int(gd2["rating"]))
+                    label = "AI Est. Rating" if gd2.get("ai_guess") else "Glassdoor Rating"
+                    st.metric(label, f"{gd2['rating']:.1f} / 5")
+                    st.caption(stars)
+                if gd2.get("salary"):
+                    label = "AI Est. Monthly" if gd2.get("ai_guess") else "Est. Monthly Salary"
+                    st.metric(label, gd2["salary"])
                 if gd2.get("ai_guess"):
-                    st.caption("⚠️ AI-generated estimate — not from Glassdoor")
+                    st.caption("⚠️ AI-generated — not from Glassdoor")
             else:
-                st.caption("No company data found")
+                if st.button("🔍 Lookup Company", key=f"gd_lookup_{company_key}_{idx}"):
+                    with st.spinner("Searching Glassdoor..."):
+                        gd_result = lookup_glassdoor(company_key)
+                        if gd_result and gd_result.get("error") and DEEPSEEK_KEY:
+                            ai = guess_company_info(company_key, job.get("title", ""))
+                            if ai:
+                                gd_result = ai
+                        st.session_state.glassdoor_cache[company_key] = gd_result
+                        st.rerun()
 
     if st.session_state.active_section == 1:
         st.subheader("Resume Tailoring")
