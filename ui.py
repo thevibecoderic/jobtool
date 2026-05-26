@@ -14,11 +14,16 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 
 st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 
-# Hide Streamlit branding + GitHub corner
+# Hide all Streamlit branding, GitHub links, and deploy UI
 st.markdown("""
 <style>
-#MainMenu, header, footer {visibility: hidden;}
-.stDeployButton {display:none;}
+#MainMenu, header, footer, .stAppDeployButton,
+.viewerBadge_container__1QSob,
+[data-testid="stAppDeployButton"],
+[data-testid="stFooter"],
+.st-emotion-cache-1avcm0n, .st-emotion-cache-16txtl3,
+a[href*="github"], a[href*="streamlit.app/source"]
+{display:none !important;}
 </style>
 """, unsafe_allow_html=True)
 
