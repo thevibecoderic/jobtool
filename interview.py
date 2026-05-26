@@ -64,18 +64,23 @@ def generate_questions_simple(job):
     return qs[:10]
 
 
-def generate_suggested_answer(question, job_title, company, jd_text=""):
-    """Generate a model/suggested answer for an interview question."""
+def improve_answer(question, user_answer, job_title, company, jd_text=""):
+    """Review and improve the user's interview answer."""
     from utils import DEEPSEEK_KEY, call_deepseek
     if not DEEPSEEK_KEY:
         return None
     prompt = f"""Job: {job_title} at {company}
 Job Description: {jd_text[:1000]}
 Interview Question: {question}
+Candidate's Draft Answer: {user_answer}
 
-Write a strong, concise model answer (2-3 short paragraphs) using the STAR method where applicable.
-Tailor it to the specific role and company. Keep it professional but conversational — like a real person answering, not a textbook."""
-    return call_deepseek(prompt, "You are an experienced interview coach. Write realistic, concise model answers.", max_tokens=350)
+Rewrite and improve this answer. Keep the candidate's voice and core points, but:
+- Tighten the wording, remove filler
+- Add specific details or metrics if the job description suggests them
+- Use STAR structure where appropriate
+- Keep it concise (2-3 short paragraphs max)
+Return just the improved answer."""
+    return call_deepseek(prompt, "You are an interview coach. Improve the candidate's answer while keeping their voice.", max_tokens=350)
 
 
 def evaluate_answer(question, answer):

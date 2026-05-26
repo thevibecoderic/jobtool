@@ -12,7 +12,7 @@ from glassdoor import lookup_glassdoor, guess_company_info
 from resume import (parse_resume, tailor_resume_simple, tailor_resume_ai,
                     generate_tailored_resume, build_docx, build_tailored_docx)
 from interview import (generate_questions_ai, generate_questions_simple,
-                       evaluate_answer, generate_suggested_answer)
+                       evaluate_answer, improve_answer)
 
 st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 
@@ -31,7 +31,6 @@ iframe[src*="github"], div:has(> a[href*="github"])
 
 def main():
     st.title("🎯 Job Scraper + Resume Tailor + Mock Interview")
-    st.caption("Scrapes LinkedIn jobs in Singapore (last 2 weeks) | Powered by DeepSeek")
 
     # Keyboard nav
     st.markdown("""
@@ -467,7 +466,7 @@ def main():
                         sug = st.session_state.mock_suggestions.get(i)
                         if sug:
                             st.divider()
-                            st.caption("💡 Suggested answer:")
+                            st.caption("✨ Improved answer:")
                             st.markdown(sug)
 
                 qa_text = ""
@@ -476,7 +475,7 @@ def main():
                     qa_text += f"Q{i+1}: {q_clean}\nA{i+1}: {fb or '*No answer*'}\n"
                     sug = st.session_state.mock_suggestions.get(i)
                     if sug:
-                        qa_text += f"Suggested: {sug}\n"
+                        qa_text += f"Improved: {sug}\n"
                     qa_text += "\n"
                 st.download_button(
                     "📥 Export Q&A (.txt)", data=qa_text,
@@ -494,23 +493,23 @@ def main():
                 qtext = re.sub(r'^\d+[\.\)\-]+\s*', '', qs[midx])
                 st.markdown(f"##### Q{midx+1}: {qtext}")
 
-                # Suggested answer
-                if DEEPSEEK_KEY:
-                    if st.button("💡 Suggest Answer", key=f"suggest_{midx}"):
-                        with st.spinner("Generating suggested answer..."):
-                            sug = generate_suggested_answer(
-                                qs[midx], job.get("title", ""), job.get("company", ""),
+                answer = st.text_area("Your answer:", key=f"ans_{midx}", height=120)
+
+                if DEEPSEEK_KEY and answer.strip():
+                    if st.button("✨ Improve My Answer", key=f"improve_{midx}"):
+                        with st.spinner("Improving your answer..."):
+                            improved = improve_answer(
+                                qs[midx], answer.strip(),
+                                job.get("title", ""), job.get("company", ""),
                                 job.get("description", "")
                             )
-                            if sug:
-                                st.session_state.mock_suggestions[midx] = sug
+                            if improved:
+                                st.session_state.mock_suggestions[midx] = improved
                                 st.rerun()
                 sug = st.session_state.mock_suggestions.get(midx)
                 if sug:
-                    with st.expander("💡 Suggested Answer", expanded=True):
+                    with st.expander("✨ Improved Answer", expanded=True):
                         st.markdown(sug)
-
-                answer = st.text_area("Your answer:", key=f"ans_{midx}", height=120)
 
                 c1, c2, c3 = st.columns(3)
                 with c1:
@@ -585,6 +584,9 @@ Generate 5 smart questions a candidate should ask the interviewer for this speci
                 st.markdown("##### AI-Generated Questions")
                 st.markdown(st.session_state.ask_them_qs)
 
+
+    st.divider()
+    st.caption("🔍 Scraping LinkedIn jobs in Singapore (last 2 weeks) — good luck out there 🍀")
 
 if __name__ == "__main__":
     main()
