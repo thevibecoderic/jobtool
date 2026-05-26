@@ -855,9 +855,9 @@ def build_docx(tailored_text):
             run.font.size = Pt(13)
             if len(parts) > 1 and parts[1].strip():
                 p.add_run(" " + parts[1].strip())
-        elif line.startswith("- ") or line.startswith("• "):
-            doc.add_paragraph(line, style='List Bullet')
-        else:
+            elif line.startswith("- "):
+                pdf.set_font("Helvetica", "", 9)
+                text = "  - " + _sanitize(line[2:].strip())
             doc.add_paragraph(line)
     buf = io.BytesIO()
     doc.save(buf)
@@ -900,15 +900,20 @@ def _sanitize(text):
 
 
 def build_pdf(tailored_text):
-    """Build a clean PDF resume using fpdf2 — matches docx layout. Returns BytesIO or None on failure."""
+    """Build a clean PDF resume using fpdf2. Returns BytesIO or None on failure."""
+    if not tailored_text:
+        return None
     try:
         from fpdf import FPDF
+    except ImportError:
+        return None
+    try:
         pdf = FPDF("P", "mm", "A4")
         pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=20)
-        margin = pdf.l_margin
+        pdf.set_auto_page_break(auto=True, margin=15)
+        margin = 15
         pw = pdf.w - margin * 2
-        lh = 5.5
+        lh = 4.5
 
         lines = tailored_text.split('\n')
         for line in lines:
@@ -927,30 +932,38 @@ def build_pdf(tailored_text):
                 label = _sanitize(parts[0]) + ":"
                 if len(parts) > 1 and parts[1].strip():
                     body = "  " + _sanitize(parts[1].strip())
-                    pdf.set_font("Helvetica", "B", 13)
+                    pdf.set_font("Helvetica", "B", 11)
                     w = pdf.get_string_width(label)
                     pdf.cell(w + 1, 7, label)
-                    pdf.set_font("Helvetica", "", 10)
+                    pdf.set_font("Helvetica", "", 9)
                     x0 = pdf.get_x()
-                    pdf.multi_cell(pw - (x0 - margin), lh, body)
+                    remaining_w = pw - (x0 - margin)
+                    if remaining_w < 30:
+                        pdf.ln(7)
+                        pdf.multi_cell(pw, lh, body)
+                    else:
+                        pdf.multi_cell(remaining_w, lh, body)
                 else:
-                    pdf.set_font("Helvetica", "B", 13)
+                    pdf.set_font("Helvetica", "B", 11)
                     pdf.multi_cell(pw, 7, label)
                 pdf.ln(2)
-            elif line.startswith("- ") or line.startswith("• "):
-                pdf.set_font("Helvetica", "", 10)
-                text = "  • " + _sanitize(line.lstrip("-• ").strip())
+            elif line.startswith("- "):
+                pdf.set_font("Helvetica", "", 9)
+                text = "  - " + _sanitize(line[2:].strip())
                 pdf.multi_cell(pw, lh, text)
             else:
-                pdf.set_font("Helvetica", "", 10)
+                pdf.set_font("Helvetica", "", 9)
                 pdf.multi_cell(pw, lh, _sanitize(line))
 
         buf = io.BytesIO()
-        buf.write(pdf.output())
+        pdf_data = pdf.output(dest="S")
+        if isinstance(pdf_data, str):
+            pdf_data = pdf_data.encode('latin-1')
+        buf.write(pdf_data)
         buf.seek(0)
         return buf
-    except Exception:
-        return None
+    except Exception as e:
+        return f"pdf_error:{e}"
 
 
 # ── Interview ─────────────────────────────────────────
@@ -1028,6 +1041,78 @@ Brief feedback (2-3 sentences): what was strong, what to improve, score 1-10."""
 
 # ── UI ────────────────────────────────────────────────
 
+
+def _extract_title(text, use_ai=True):
+    """Extract job title from pasted job description or LinkedIn URL."""
+    if not text:
+        return "Custom Job"
+    # Try LinkedIn URL pattern
+    m = re.search(r'linkedin\.com/jobs/view/([^/]+)-\d+', text)
+    if m:
+        return m.group(1).replace('-', ' ').title()
+    # Try AI extraction
+    if use_ai and DEEPSEEK_KEY:
+        result = call_deepseek(
+            f"Extract ONLY the job title from this text. Return just the title, nothing else:\n\n{text[:1500]}",
+            "You extract job titles. Return only the title, no explanation.", max_tokens=50
+        )
+        if result and len(result.strip()) > 2 and len(result.strip()) < 80:
+            return result.strip()
+    # Fallback: first substantial line that isn't metadata
+    lines = [l.strip() for l in text.split('\n') if l.strip() and len(l.strip()) > 3]
+    for line in lines[:5]:
+        if re.match(r'^(at |@|[A-Z][a-z]+(?: [A-Z][a-z]+){0,2}$)', line):
+            continue
+        if re.match(r'^(Singapore|Remote|Hybrid|In.office|Full.time|Part.time|Contract|S\$|Posted|\d+ (day|week|month)s? ago)', line, re.I):
+            continue
+        if 5 < len(line) < 80 and not line.startswith('http'):
+            return line[:80]
+    return "Custom Job"
+
+
+def _extract_company(text, use_ai=True):
+    """Extract company name from pasted job description."""
+    if not text:
+        return "Unknown"
+    # Try AI extraction
+    if use_ai and DEEPSEEK_KEY:
+        result = call_deepseek(
+            f"Extract ONLY the company name from this job posting. Return just the company name, nothing else:\n\n{text[:1500]}",
+            "You extract company names. Return only the name, no explanation.", max_tokens=30
+        )
+        if result and len(result.strip()) > 1 and len(result.strip()) < 50:
+            return result.strip()
+    # Fallback regex
+    m = re.search(r'\bat\s+([A-Z][A-Za-z0-9 .&,-]+?)(?:\s+is\b|\s+in\b|\s+Singapore|\s*$|\.)', text)
+    if m and len(m.group(1)) > 2:
+        return m.group(1).strip().rstrip('.,')
+    m = re.search(r'@\s*([A-Z][A-Za-z0-9 .&,-]+?)(?:\s|$|\.|,)', text)
+    if m and len(m.group(1)) > 2:
+        return m.group(1).strip()
+    m = re.search(r'([A-Z][A-Za-z0-9 .&,-]{2,30})\s+is\s+(hiring|looking)', text)
+    if m:
+        return m.group(1).strip()
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    for line in lines[:5]:
+        if re.match(r'^[A-Z][A-Za-z0-9 .&,-]{2,30}$', line) and not re.match(r'^(Singapore|Remote|Hybrid)', line, re.I):
+            return line[:40]
+    return "Unknown"
+
+    if m and len(m.group(1)) > 2:
+        return m.group(1).strip().rstrip('.,')
+    m = re.search(r'@\s*([A-Z][A-Za-z0-9 .&,-]+?)(?:\s|$|\.|,)', text)
+    if m and len(m.group(1)) > 2:
+        return m.group(1).strip()
+    m = re.search(r'([A-Z][A-Za-z0-9 .&,-]{2,30})\s+is\s+(hiring|looking)', text)
+    if m:
+        return m.group(1).strip()
+    # Try first line that looks like a company name
+    lines = [l.strip() for l in text.split('\n') if l.strip()]
+    for line in lines[:5]:
+        if re.match(r'^[A-Z][A-Za-z0-9 .&,-]{2,30}$', line) and not re.match(r'^(Singapore|Remote|Hybrid)', line, re.I):
+            return line[:40]
+    return "Unknown"
+
 def main():
     st.title("🎯 Job Scraper + Resume Tailor + Mock Interview")
     st.caption("Scrapes LinkedIn jobs in Singapore (last 2 weeks) | Powered by DeepSeek")
@@ -1072,7 +1157,7 @@ def main():
                     with st.spinner("Fetching job..."):
                         desc, reqs = get_job_details(custom_url)
                         if desc:
-                            st.session_state.custom_job = {"title": "Custom Job", "company": "Unknown", "url": custom_url, "description": desc, "requirements": reqs, "mode": detect_mode(desc), "logo": "", "date_posted": "", "source": "custom"}
+                            st.session_state.custom_job = {"title": _extract_title(desc), "company": _extract_company(desc), "url": custom_url, "description": desc, "requirements": reqs, "mode": detect_mode(desc), "logo": "", "date_posted": "", "source": "custom"}
                             st.session_state.jobs = [st.session_state.custom_job]
                             st.session_state.job_idx = 0
                             st.session_state.glassdoor_cache = {}
@@ -1080,7 +1165,7 @@ def main():
                         else:
                             st.error("Could not fetch job — site may block datacenter IPs.")
                 elif custom_desc.strip():
-                    st.session_state.custom_job = {"title": "Custom Job", "company": "Unknown", "url": "", "description": custom_desc, "requirements": extract_requirements(custom_desc), "mode": detect_mode(custom_desc), "logo": "", "date_posted": "", "source": "custom"}
+                    st.session_state.custom_job = {"title": _extract_title(custom_desc), "company": _extract_company(custom_desc), "url": "", "description": custom_desc, "requirements": extract_requirements(custom_desc), "mode": detect_mode(custom_desc), "logo": "", "date_posted": "", "source": "custom"}
                     st.session_state.jobs = [st.session_state.custom_job]
                     st.session_state.job_idx = 0
                     st.session_state.glassdoor_cache = {}
@@ -1134,39 +1219,62 @@ def main():
 
     jobs = st.session_state.jobs
     if "job_idx" not in st.session_state:
-        st.session_state.job_idx = 0
+        st.session_state.job_idx = 0  # show first job immediately
+
     idx = st.session_state.job_idx
     total = len(jobs)
-
-    # ── Navigation ──
+    # ── Job List (compact) ──
     st.success(f"Found {total} jobs")
 
-    nav_cols = st.columns([1, 2, 1])
+    # Quick-jump dropdown
+    job_labels = []
+    for i, j in enumerate(jobs):
+        meta = []
+        if j.get("company"):
+            meta.append(j["company"])
+        if j.get("date_posted"):
+            meta.append(j["date_posted"])
+        label = f"{i+1}. {j['title']}  —  {', '.join(meta)}" if meta else f"{i+1}. {j['title']}"
+        job_labels.append(label)
+    selected = st.selectbox("Jump to job", options=range(total), format_func=lambda i: job_labels[i], index=idx, label_visibility="collapsed")
+    if selected != idx:
+        st.session_state.job_idx = selected
+        st.rerun()
+
+    job = jobs[idx]
+
+    # ── Anchor for scroll-to-top on navigation ──
+    st.markdown('<div id="job-top"></div>', unsafe_allow_html=True)
+    st.markdown("""
+    <script>
+    document.getElementById('job-top')?.scrollIntoView({behavior: 'smooth'});
+    </script>
+    """, unsafe_allow_html=True)
+
+    # Prev / Next
+    st.divider()
+    nav_cols = st.columns([1, 1])
     with nav_cols[0]:
         if st.button("◀  Prev", use_container_width=True, key="prev_btn", disabled=(idx == 0)):
             st.session_state.job_idx = max(0, idx - 1)
             st.rerun()
     with nav_cols[1]:
-        st.markdown(f"<h3 style='text-align:center'>{idx+1} / {total}</h3>", unsafe_allow_html=True)
-    with nav_cols[2]:
         if st.button("Next  ▶", use_container_width=True, key="next_btn", disabled=(idx >= total - 1)):
             st.session_state.job_idx = min(total - 1, idx + 1)
             st.rerun()
-
-    job = jobs[idx]
 
     # ── Job Card ──
     st.divider()
     info_col, link_col = st.columns([6, 1.4])
     with info_col:
         st.markdown(f"## {job['title']}")
-        meta_parts = [f"**{job['company']}**", job.get('mode', '')]
+        card_meta = [f"**{job['company']}**", job.get('mode', '')]
         if job.get("date_posted"):
-            meta_parts.append(f"🕒 {job['date_posted']}")
+            card_meta.append(f"🕒 {job['date_posted']}")
         src = job.get("source", "")
         if src:
-            meta_parts.append(f"via {src.title()}")
-        st.markdown("  ·  ".join(p for p in meta_parts if p))
+            card_meta.append(f"via {src.title()}")
+        st.markdown("  ·  ".join(p for p in card_meta if p))
     with link_col:
         if job.get("url"):
             st.link_button("🔗 Open on LinkedIn", job['url'])
@@ -1277,7 +1385,7 @@ def main():
                     )
                 with dl2:
                     pdf_buf = build_pdf(st.session_state.tailored_text)
-                    if pdf_buf:
+                    if pdf_buf and not (isinstance(pdf_buf, str) and pdf_buf.startswith("pdf_error:")):
                         st.download_button(
                             label="⬇️ Download .pdf",
                             data=pdf_buf,
@@ -1286,7 +1394,10 @@ def main():
                             use_container_width=True,
                         )
                     else:
-                        st.caption("PDF generation failed — use .docx instead")
+                        if isinstance(pdf_buf, str) and pdf_buf.startswith("pdf_error:"):
+                            st.caption(f"PDF error: {pdf_buf}")
+                        else:
+                            st.caption("PDF unavailable — install fpdf2: `pip install fpdf2`")
 
     with tab3:
         st.subheader("Interview Questions")
