@@ -1275,6 +1275,16 @@ def main():
         company_filter = st.text_input("Company (optional)", placeholder="e.g. Google, Shopee")
         mode_filter = st.multiselect("Work mode filter", ["🏠 Remote", "🏢🏠 Hybrid", "🏢 In-office"], default=[])
         max_jobs = st.slider("Max jobs", 10, 50, 25)
+        if st.button("🔍 Find Jobs", type="primary", use_container_width=True):
+            st.session_state.job_idx = 0
+            st.session_state.glassdoor_cache = {}
+            st.session_state.custom_job = None
+            search = kw
+            if company_filter.strip():
+                search = f"{kw} {company_filter.strip()}" if kw else company_filter.strip()
+            with st.spinner(f"Searching for '{search}'..."):
+                st.session_state.jobs = scrape_linkedin(search, max_jobs)
+            st.rerun()
         st.divider()
 
         st.subheader("📋 Custom Job")
@@ -1327,20 +1337,6 @@ def main():
     if not kw and not company_filter.strip() and not st.session_state.get("custom_job"):
         st.info("👈 Enter a job title or company in the sidebar to start")
         return
-
-    # Build search query with company filter
-    search_query = kw
-    if company_filter.strip():
-        search_query = f"{kw} {company_filter.strip()}" if kw else company_filter.strip()
-
-    if kw or company_filter.strip():
-        if st.button("🔍 Find Jobs", type="primary", use_container_width=True):
-            st.session_state.job_idx = 0
-            st.session_state.glassdoor_cache = {}
-            st.session_state.custom_job = None
-            with st.spinner(f"Searching for '{search_query}'..."):
-                st.session_state.jobs = scrape_linkedin(search_query, max_jobs)
-            st.rerun()
 
     if "jobs" not in st.session_state or st.session_state.jobs is None:
         return
