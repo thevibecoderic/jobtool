@@ -30,7 +30,8 @@ iframe[src*="github"], div:has(> a[href*="github"])
 
 
 def main():
-    st.title("🎯 Job Scraper + Resume Tailor + Mock Interview")
+    st.title("🎯 SG Job Hunting Tool")
+    st.caption("Search jobs · Tailor resume · Interview prep · Salary insights")
 
     # Keyboard nav
     st.markdown("""
