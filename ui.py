@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
 Job Scraper UI — Streamlit
-Usage: streamlit run jobtool/ui.py
-Reads DEEPSEEK_API_KEY from jobtool/.env
+Usage: streamlit run ui.py
+Reads DEEPSEEK_API_KEY from .env or st.secrets
 """
 
 import streamlit as st
@@ -1240,7 +1240,7 @@ def main():
             st.checkbox("Use AI for tailoring", value=True, key="use_ai_tailor")
             st.checkbox("Use AI for questions", value=True, key="use_ai_questions")
         else:
-            st.warning("Add key to jobtool/.env then restart")
+            st.warning("Add DEEPSEEK_API_KEY to .env or st.secrets then restart")
             st.session_state.use_ai_tailor = False
             st.session_state.use_ai_questions = False
 
