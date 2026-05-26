@@ -20,6 +20,11 @@ HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
+GOOGLEBOT_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 LOCATION = "Singapore"
 TIME_RANGE = "r1209600"
 
@@ -94,7 +99,7 @@ def lookup_glassdoor(company_name):
             salary_text = soup.get_text()
             m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:–|-|to)\s*(?:S\$\s?|SGD\s?)?([\d,]+)', salary_text, re.I)
             if m:
-                salary = f"SGD {m.group(1)} - {m.group(2)}"
+                salary = _to_monthly(f"SGD {m.group(1)} - {m.group(2)}")
             if rating or salary:
                 return {"rating": rating, "salary": salary}
     except:
@@ -126,20 +131,430 @@ def lookup_glassdoor(company_name):
                 salary_text = soup.get_text()
                 m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:–|-|to)\s*(?:S\$\s?|SGD\s?)?([\d,]+)', salary_text, re.I)
                 if m:
-                    salary = f"SGD {m.group(1)} - {m.group(2)}"
+                    salary = _to_monthly(f"SGD {m.group(1)} - {m.group(2)}")
                 else:
                     m = re.search(r'(?:S\$\s?|SGD\s?)([\d,]+)\s*(?:/yr|/year|per year|/mo|/month)', salary_text, re.I)
                     if m:
-                        salary = f"SGD {m.group(1)}"
+                        suffix = "/mo" if re.search(r'/mo|/month', m.group(0), re.I) else ""
+                        raw = f"SGD {m.group(1)}"
+                        salary = raw + suffix if suffix else _to_monthly(raw)
 
             if rating or salary:
                 return {"rating": rating, "salary": salary}
         except:
             continue
+    # 3. AI fallback: educated guess based on company + role
     return {"error": "Lookup blocked (datacenter IP rejected by search engines). Works on local runs."}
 
 
+def _to_monthly(salary_str):
+    """Convert an annual salary string like 'SGD 60,000 - 90,000' to monthly 'SGD 5,000 - 7,500/mo'."""
+    if not salary_str:
+        return salary_str
+    nums = re.findall(r'([\d,]+)', salary_str)
+    if not nums:
+        return salary_str
+    converted = []
+    for n in nums:
+        try:
+            val = int(n.replace(',', '')) // 12
+            converted.append(f"{val:,}")
+        except:
+            converted.append(n)
+    if len(converted) >= 2:
+        return f"SGD {converted[0]} - {converted[1]}/mo"
+    elif converted:
+        return f"SGD {converted[0]}/mo"
+    return salary_str
+
+
+def guess_company_info(company_name, job_title=""):
+    """Use DeepSeek to estimate company rating + monthly salary when Glassdoor is unavailable."""
+    if not DEEPSEEK_KEY:
+        return None
+    prompt = f"""Company: {company_name}
+Role: {job_title}
+Location: Singapore
+
+Based on your knowledge of this company and similar roles in Singapore, estimate:
+1. Company rating out of 5 (based on general reputation)
+2. Estimated MONTHLY salary range in SGD for this role (e.g. "SGD 5,000 - 8,000/mo")
+
+Format your answer exactly like this:
+Rating: X.X/5
+Salary: SGD X,XXX - X,XXX/mo
+
+If you're unsure, give your best estimate and note the uncertainty."""
+    result = call_deepseek(prompt, "You are a compensation analyst with knowledge of Singapore tech salaries. Always return MONTHLY salary.", max_tokens=150)
+    if not result:
+        return None
+    info = {}
+    m = re.search(r'Rating:\s*(\d\.?\d?)', result)
+    if m:
+        try:
+            info["rating"] = float(m.group(1))
+        except:
+            pass
+    m = re.search(r'Salary:\s*(SGD\s*[\d,]+)\s*(?:–|-|to)\s*(SGD\s*[\d,]+)', result, re.I)
+    if m:
+        sl = f"{m.group(1).strip()} - {m.group(2).strip()}"
+        info["salary"] = sl if sl.endswith("/mo") else sl + "/mo"
+    else:
+        m = re.search(r'Salary:\s*(SGD\s*[\d,]+)', result, re.I)
+        if m:
+            sl = m.group(1).strip()
+            info["salary"] = sl if sl.endswith("/mo") else sl + "/mo"
+    if info:
+        info["ai_guess"] = True
+    return info if info else None
+
+
 # ── Scraper ───────────────────────────────────────────
+
+# (logo extraction removed)
+
+
+def _parse_embedded(soup):
+    """Try to extract jobs from __NEXT_DATA__, __INITIAL_STATE__, __APOLLO_STATE__, or JSON-LD."""
+    jobs = []
+    seen_urls = set()
+
+    def _add_job(jp, source=""):
+        """Extract a job dict from a dict that looks like a JobPosting."""
+        # Safely cast everything — LinkedIn may store numbers where strings belong
+        def _s(v, default=""):
+            if v is None:
+                return default
+            if isinstance(v, str):
+                return v
+            if isinstance(v, (int, float, bool)):
+                return str(v) if v else default
+            return default
+
+        url = ""
+        entity_urn = _s(jp.get("entityUrn"))
+        if entity_urn and ":" in entity_urn:
+            url = f"https://www.linkedin.com/jobs/view/{entity_urn.split(':')[-1]}/"
+        if not url:
+            url = _s(jp.get("url")) or _s(jp.get("applyUrl"))
+        if not url:
+            return
+        if url in seen_urls:
+            return
+        seen_urls.add(url)
+
+        # ── Description: try known keys, then hunt for longest text value ──
+        desc = ""
+        desc_keys = ["description", "descriptionText", "jobDescription", "descriptionHtml",
+                     "detailDescription", "summary", "body", "content", "text", "html"]
+        for dk in desc_keys:
+            raw = jp.get(dk, "")
+            if isinstance(raw, str) and raw.strip():
+                if raw[0] == "<" or "<" in raw[:200]:
+                    desc = BeautifulSoup(raw, "html.parser").get_text().strip()
+                else:
+                    desc = raw.strip()
+                if len(desc) > 80:
+                    break
+                desc = ""
+            elif isinstance(raw, dict):
+                for ik in ["text", "html", "plainText", "content", "body"]:
+                    inner = raw.get(ik, "")
+                    if isinstance(inner, str) and inner.strip():
+                        if inner[0] == "<" or "<" in inner[:200]:
+                            desc = BeautifulSoup(inner, "html.parser").get_text().strip()
+                        else:
+                            desc = inner.strip()
+                        if len(desc) > 80:
+                            break
+                        desc = ""
+                if len(desc) > 80:
+                    break
+        # Fallback: recursively scan ALL nested values for the longest text (>150 chars)
+        if not desc:
+            best = ""
+            def _find_longest(obj, depth=0):
+                nonlocal best
+                if depth > 6:
+                    return
+                if isinstance(obj, str) and len(obj) > len(best) and len(obj) > 150:
+                    best = obj
+                elif isinstance(obj, dict):
+                    for v in obj.values():
+                        _find_longest(v, depth + 1)
+                elif isinstance(obj, list):
+                    for v in obj[:30]:
+                        _find_longest(v, depth + 1)
+            _find_longest(jp)
+            if best:
+                if best[0] == "<" or "<" in best[:200]:
+                    desc = BeautifulSoup(best, "html.parser").get_text().strip()
+                else:
+                    desc = best.strip()
+
+        # ── Company: try known keys, ensure it's always a string ──
+        company = "Unknown"
+        company_keys = ["hiringOrganization", "companyDetails", "company", "companyName",
+                        "employer", "hiringCompany", "organization", "org"]
+        for ck in company_keys:
+            org = jp.get(ck)
+            if isinstance(org, dict):
+                for nk in ["name", "companyName", "title", "label"]:
+                    v = org.get(nk)
+                    if isinstance(v, str) and v.strip():
+                        company = v.strip()
+                        break
+                if company != "Unknown":
+                    break
+            elif isinstance(org, str) and org.strip():
+                company = org.strip()
+                break
+        if not isinstance(company, str) or company in ("0", "1", "None", "null", ""):
+            company = "Unknown"
+
+        # ── Title: try known keys ──
+        title = ""
+        for tk in ["title", "jobTitle", "name", "headline", "position", "role"]:
+            v = jp.get(tk)
+            if isinstance(v, str) and v.strip() and len(v) > 2:
+                title = v.strip()
+                break
+        if not title:
+            title = "Untitled"
+
+        # ── Logo ── (removed)
+        logo = ""
+
+        # ── Date ──
+        date_posted = ""
+        for dk in ["datePosted", "listedAt", "createdAt", "publishedAt", "postDate", "postedDate", "postedAt"]:
+            dv = jp.get(dk)
+            if dv is not None:
+                date_posted = str(dv)
+                break
+        if date_posted and date_posted.isdigit() and len(date_posted) >= 10:
+            try:
+                import datetime
+                ts = int(date_posted) / 1000 if len(date_posted) > 10 else int(date_posted)
+                dt = datetime.datetime.fromtimestamp(ts)
+                days_ago = (datetime.datetime.now() - dt).days
+                date_posted = f"{days_ago} days ago" if days_ago > 0 else "Today"
+            except:
+                pass
+
+        if title == "Untitled" and not desc:
+            return  # skip entries with zero useful content
+
+        jobs.append({
+            "title": title,
+            "company": company,
+            "url": url,
+            "description": desc,
+            "requirements": extract_requirements(desc),
+            "mode": detect_mode(desc),
+            "logo": logo,
+            "date_posted": date_posted,
+        })
+
+    # 1) __NEXT_DATA__
+    next_data = soup.find("script", id="__NEXT_DATA__")
+    if next_data and next_data.string:
+        try:
+            data = json.loads(next_data.string)
+            def walk(obj, depth=0):
+                if depth > 20:
+                    return
+                if isinstance(obj, dict):
+                    if "jobPosting" in obj:
+                        _add_job(obj["jobPosting"])
+                    # Broader: any dict with title+url in linkedin jobs context — require desc/company signal
+                    keys = set(obj.keys()) if isinstance(obj, dict) else set()
+                    has_job_keys = keys & {"title", "companyName", "hiringOrganization", "jobPosting", "description", "entityUrn"}
+                    has_desc_signal = keys & {"description", "descriptionText", "jobDescription", "hiringOrganization", "companyName", "companyDetails"}
+                    has_url = keys & {"url", "applyUrl", "entityUrn"}
+                    if len(has_job_keys) >= 2 and len(has_url) >= 1 and len(has_desc_signal) >= 1:
+                        url_val = str(obj.get("url", "") or obj.get("entityUrn", ""))
+                        if "linkedin.com/jobs" in url_val or "linkedin.com" in url_val or "job" in url_val.lower():
+                            _add_job(obj)
+                    for v in obj.values():
+                        walk(v, depth + 1)
+                elif isinstance(obj, list):
+                    for v in obj[:100]:
+                        walk(v, depth + 1)
+            walk(data)
+        except:
+            pass
+
+    if jobs:
+        return jobs
+
+    # 2) window.__INITIAL_STATE__ / window.__APOLLO_STATE__ in inline scripts
+    for script in soup.find_all("script"):
+        if not script.string:
+            continue
+        for prefix in ["window.__INITIAL_STATE__", "window.__APOLLO_STATE__"]:
+            if prefix not in script.string:
+                continue
+            try:
+                start = script.string.index(prefix)
+                after = script.string[start + len(prefix):]
+                # Find the JSON object
+                eq = after.find("=")
+                if eq == -1:
+                    eq = after.find("{")
+                else:
+                    eq = after.find("{", eq)
+                if eq == -1:
+                    continue
+                # extract JSON by brace matching
+                depth_count = 0
+                end = eq
+                for i, ch in enumerate(after[eq:], eq):
+                    if ch == "{":
+                        depth_count += 1
+                    elif ch == "}":
+                        depth_count -= 1
+                        if depth_count == 0:
+                            end = i + 1
+                            break
+                if end <= eq:
+                    continue
+                raw = after[eq:end]
+                data = json.loads(raw)
+                def walk2(obj, d=0):
+                    if d > 20:
+                        return
+                    if isinstance(obj, dict):
+                        for k in ["jobs", "jobPostings", "results", "items", "data", "included"]:
+                            if k in obj and isinstance(obj[k], list):
+                                for item in obj[k][:50]:
+                                    if isinstance(item, dict):
+                                        _add_job(item)
+                        # Walk all dict values
+                        for v in obj.values():
+                            walk2(v, d + 1)
+                    elif isinstance(obj, list):
+                        for v in obj[:100]:
+                            walk2(v, d + 1)
+                walk2(data)
+            except:
+                continue
+        if jobs:
+            return jobs
+
+    # 3) JSON-LD
+    for s in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(s.string)
+            items = data if isinstance(data, list) else [data]
+            for item in items:
+                if item.get("@type") == "JobPosting":
+                    _add_job(item)
+        except:
+            pass
+
+    # 4) Last resort: search raw page text for job description blocks
+    if not jobs:
+        page_text = soup.get_text()
+        # Look for job title patterns followed by description-like text
+        # LinkedIn pages often have job titles in h1/h2 with desc following
+        for h in soup.find_all(["h1", "h2", "h3"]):
+            title = h.get_text(strip=True)
+            if not title or len(title) < 3 or len(title) > 120:
+                continue
+            # Look for a substantial text block after this heading
+            parent = h.find_parent(["div", "section", "article"])
+            if not parent:
+                continue
+            desc_candidates = parent.find_all(["p", "div", "span", "section", "article"])
+            for dc in desc_candidates:
+                txt = dc.get_text(" ", strip=True)
+                if len(txt) > 200:
+                    # Try to find a URL near this heading
+                    link = parent.find("a", href=re.compile(r"/jobs/"))
+                    url = ""
+                    if link:
+                        url = link["href"]
+                        if not url.startswith("http"):
+                            url = "https://www.linkedin.com" + url
+                    jobs.append({
+                        "title": title,
+                        "company": "Unknown",
+                        "url": url,
+                        "description": txt[:3000],
+                        "requirements": extract_requirements(txt),
+                        "mode": detect_mode(txt),
+                        "logo": "",
+                        "date_posted": "",
+                    })
+                    break
+            if len(jobs) >= 10:
+                break
+def _extract_card_date(card):
+    """Extract posting date / time-ago text from a job card."""
+    for el in card.find_all(["time", "span", "p"]):
+        text = el.get_text(strip=True).lower()
+        if any(w in text for w in ["day", "week", "month", "hour", "minute", "ago", "just now"]):
+            return el.get_text(strip=True)
+        if el.get("datetime"):
+            return el["datetime"]
+    return ""
+
+
+def _extract_card_snippet(card):
+    """Extract visible description snippet from a job card. Returns '' if only location/date found."""
+    def _is_metadata(text):
+        """Reject text that looks like location, date, or time-ago."""
+        t = text.lower().strip()
+        # Pure location patterns
+        if re.match(r'^[a-z]+(,\s*[a-z]+)+$', t) and len(t) < 60:
+            return True
+        # Date / time-ago patterns
+        if re.search(r'\d+\s*(day|week|month|hour|minute|yr|year)s?\s*ago|today|yesterday|just now', t):
+            if len(t) < 80:
+                return True
+        # Pure date like "2026-05-13"
+        if re.match(r'^\d{4}-\d{2}-\d{2}$', t.strip()):
+            return True
+        # Singapore, Singapore (duplicate city/country)
+        if re.match(r'^[A-Z][a-z]+,\s*[A-Z][a-z]+(\s+\d+)?$', t.strip()) and len(t) < 40:
+            return True
+        return False
+
+    # 1) Try class-based matching
+    for cls_pat in [r"snippet", r"metadata", r"description", r"summary", r"detail", r"info", r"body", r"text"]:
+        el = card.find(["p", "div", "span", "section"], class_=re.compile(cls_pat, re.I))
+        if el:
+            text = el.get_text(" ", strip=True)
+            if len(text) > 80 and not _is_metadata(text):
+                return text
+    # 2) Try any <p> or <span> with substantial text
+    for tag in ["p", "span", "div"]:
+        for el in card.find_all(tag):
+            text = el.get_text(" ", strip=True)
+            if len(text) > 80:
+                if not re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,3}$', text):
+                    if not _is_metadata(text):
+                        return text
+    # 3) Get all text from the card, strip known short lines (title, company, location, date)
+    all_text = card.get_text("\n", strip=True)
+    lines = [l.strip() for l in all_text.split("\n") if l.strip()]
+    meaningful = [l for l in lines if len(l) > 60
+                  and not re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,3}$', l)
+                  and not _is_metadata(l)]
+    if meaningful:
+        return " ".join(meaningful[:5])
+    # 4) Try parent elements
+    parent = card.find_parent(["div", "li", "section"])
+    if parent:
+        for el in parent.find_all(["p", "span", "div"]):
+            text = el.get_text(" ", strip=True)
+            if len(text) > 100:
+                if not re.match(r'^[A-Z][a-z]+(\s+[A-Z][a-z]+){0,3}$', text):
+                    if not _is_metadata(text):
+                        return text[:2000]
+    return ""
+
 
 @st.cache_data(ttl=600, show_spinner=False)
 def scrape_linkedin(keywords, max_jobs=30):
@@ -157,6 +572,42 @@ def scrape_linkedin(keywords, max_jobs=30):
             if resp.status_code != 200:
                 break
             soup = BeautifulSoup(resp.text, "html.parser")
+
+            # 1) Try embedded data — no extra HTTP requests needed
+            embedded = _parse_embedded(soup)
+            if embedded:
+                # Collect cards for snippet enrichment
+                cards = soup.find_all("div", class_=re.compile(r"base-card|job-card|job-search-card"))
+                if not cards:
+                    cards = soup.find_all("li", class_=re.compile(r"job|result"))
+                for j in embedded:
+                    # If description is blank, try matching card for snippet
+                    if not j.get("description") and cards:
+                        jurl = j.get("url", "").split("?")[0]
+                        for card in cards:
+                            link_el = card.find("a", href=re.compile(r"/jobs/view/|/jobs/"))
+                            if not link_el:
+                                continue
+                            card_url = link_el["href"]
+                            if not card_url.startswith("http"):
+                                card_url = "https://www.linkedin.com" + card_url
+                            if card_url.split("?")[0] == jurl:
+                                snippet = _extract_card_snippet(card)
+                                if snippet:
+                                    j["description"] = snippet
+                                    j["requirements"] = extract_requirements(snippet)
+                                    j["mode"] = detect_mode(snippet)
+                                date = _extract_card_date(card)
+                                if date and not j.get("date_posted"):
+                                    j["date_posted"] = date
+                                break
+                jobs.extend(embedded)
+                if len(jobs) >= max_jobs:
+                    break
+                time.sleep(1.5)
+                continue
+
+            # 2) Fallback: parse visible cards + fetch individual pages
             cards = soup.find_all("div", class_=re.compile(r"base-card|job-card|job-search-card"))
             if not cards:
                 cards = soup.find_all("li", class_=re.compile(r"job|result"))
@@ -174,12 +625,27 @@ def scrape_linkedin(keywords, max_jobs=30):
                 if not job_url.startswith("http"):
                     job_url = "https://www.linkedin.com" + job_url
                 job_url = job_url.split("?")[0]
+                company = company_el.get_text(strip=True) if company_el else "Unknown"
+                date_posted = _extract_card_date(card)
                 desc, reqs = get_job_details(job_url)
+                if not desc:
+                    desc = _extract_card_snippet(card)
+                # If still no description, generate a placeholder via AI
+                if not desc and DEEPSEEK_KEY:
+                    title = title_el.get_text(strip=True)
+                    desc = call_deepseek(
+                        f"Write a 2-3 sentence description of the role '{title}' at {company} in Singapore. "
+                        "Describe typical responsibilities based on the job title. Be specific and professional.",
+                        "You describe job roles concisely.", max_tokens=250
+                    ) or ""
+                    if desc:
+                        reqs = extract_requirements(desc)
                 jobs.append({
                     "title": title_el.get_text(strip=True),
-                    "company": company_el.get_text(strip=True) if company_el else "Unknown",
+                    "company": company,
                     "url": job_url, "description": desc,
                     "requirements": reqs, "mode": detect_mode(desc),
+                    "logo": "", "date_posted": date_posted,
                 })
             if len(jobs) >= max_jobs:
                 break
@@ -189,29 +655,78 @@ def scrape_linkedin(keywords, max_jobs=30):
     return jobs
 
 
+def _clean_html(html_str):
+    """Unescape LinkedIn's double-encoded HTML, keeping formatting tags for rich display."""
+    import html as _html
+    text = _html.unescape(html_str)
+    # Remove scripts/styles/event handlers (safety)
+    text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.I | re.DOTALL)
+    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.I | re.DOTALL)
+    text = re.sub(r'\s+on\w+="[^"]*"', '', text, flags=re.I)
+    # Keep formatting tags: br, strong, b, em, i, u, ul, ol, li, p, h1-h6
+    # Strip all other tags
+    text = re.sub(r'<(?!br\b|strong\b|b\b|em\b|i\b|u\b|ul\b|ol\b|li\b|p\b|h[1-6]\b|/\s*(?:br|strong|b|em|i|u|ul|ol|li|p|h[1-6])\s*)[^>]+>', '', text, flags=re.I)
+    return text.strip()
+
+
 def get_job_details(job_url):
-    try:
-        resp = requests.get(job_url, headers=HEADERS, timeout=15)
-        if resp.status_code != 200:
-            return "", ""
-        soup = BeautifulSoup(resp.text, "html.parser")
-        desc_el = (soup.find("div", class_="description__text") or
-                   soup.find("div", class_="show-more-less-html__markup") or
-                   soup.find("div", class_=re.compile(r"description", re.I)))
-        if desc_el:
-            desc = desc_el.get_text("\n", strip=True)
-            return desc, extract_requirements(desc)
-        for s in soup.find_all("script", type="application/ld+json"):
-            try:
-                data = json.loads(s.string)
-                if "description" in data:
-                    desc = BeautifulSoup(data["description"], "html.parser").get_text()
+    """Fetch full job description from individual LinkedIn job page."""
+    # Try Googlebot UA first (LinkedIn allows search crawlers)
+    for ua_headers in [GOOGLEBOT_HEADERS, HEADERS]:
+        try:
+            resp = requests.get(job_url, headers=ua_headers, timeout=15, allow_redirects=True)
+            if resp.status_code != 200:
+                continue
+            if len(resp.text) < 500 or "authwall" in resp.text.lower():
+                continue
+            soup = BeautifulSoup(resp.text, "html.parser")
+
+            # 1) Try visible description divs
+            desc_el = (soup.find("div", class_="description__text") or
+                       soup.find("div", class_="show-more-less-html__markup") or
+                       soup.find("div", class_=re.compile(r"description", re.I)) or
+                       soup.find("div", class_=re.compile(r"jobs-description", re.I)) or
+                       soup.find("section", class_=re.compile(r"description", re.I)))
+            if desc_el:
+                desc = desc_el.get_text("\n", strip=True)
+                if len(desc) > 200:
                     return desc, extract_requirements(desc)
-            except:
-                pass
-        return "", ""
-    except:
-        return "", ""
+
+            # 2) Try JSON-LD
+            for s in soup.find_all("script", type="application/ld+json"):
+                try:
+                    data = json.loads(s.string)
+                    if "description" in data:
+                        desc = data["description"]
+                        if isinstance(desc, str) and len(desc) > 200:
+                            desc = _clean_html(desc)
+                            return desc, extract_requirements(desc)
+                except:
+                    pass
+
+            # 3) Try meta description
+            meta = soup.find("meta", attrs={"name": "description"})
+            if meta and meta.get("content"):
+                desc = meta["content"].strip()
+                if len(desc) > 200:
+                    return desc, extract_requirements(desc)
+
+            # 4) Try inline script with job data
+            for script in soup.find_all("script"):
+                if not script.string:
+                    continue
+                if '"description"' in script.string and '"title"' in script.string:
+                    try:
+                        # Find JSON object containing description
+                        for m in re.finditer(r'\{[^{}]*"description"\s*:\s*"((?:[^"\\]|\\.)*)"[^}]*\}', script.string):
+                            raw_desc = m.group(1)
+                            if len(raw_desc) > 200:
+                                desc = _clean_html(raw_desc)
+                                return desc, extract_requirements(desc)
+                    except:
+                        pass
+        except:
+            continue
 
 
 def extract_requirements(text):
@@ -362,45 +877,73 @@ def _wrap_long_words(text, max_chars=80):
 
 
 def _sanitize(text):
-    """Strip or replace characters that Helvetica can't render."""
+    """Replace common Unicode chars with ASCII before latin-1 fallback for PDF core fonts."""
+    _UNICODE_MAP = {
+        '\u2605': '*',   # ★ black star → *
+        '\u2606': '-',   # ☆ white star → -
+        '\u2022': '-',   # • bullet → -
+        '\u2013': '-',   # – en dash → -
+        '\u2014': '--',  # — em dash → --
+        '\u2018': "'",   # ' left single quote
+        '\u2019': "'",   # ' right single quote
+        '\u201c': '"',   # " left double quote
+        '\u201d': '"',   # " right double quote
+        '\u2026': '...', # … ellipsis
+        '\xa0': ' ',     # non-breaking space
+        '\u2122': '(TM)',# ™ trademark
+        '\u00ae': '(R)', # ® registered
+    }
+    for k, v in _UNICODE_MAP.items():
+        text = text.replace(k, v)
+    # Strip remaining non-latin1; keep common symbols
     return text.encode("latin-1", errors="replace").decode("latin-1")
 
 
 def build_pdf(tailored_text):
-    """Build a clean PDF resume using fpdf2. Returns BytesIO or None on failure."""
+    """Build a clean PDF resume using fpdf2 — matches docx layout. Returns BytesIO or None on failure."""
     try:
         from fpdf import FPDF
-        pdf = FPDF()
+        pdf = FPDF("P", "mm", "A4")
         pdf.add_page()
-        pdf.set_auto_page_break(auto=True, margin=15)
-        pw = pdf.w - 2 * pdf.l_margin
+        pdf.set_auto_page_break(auto=True, margin=20)
+        margin = pdf.l_margin
+        pw = pdf.w - margin * 2
+        lh = 5.5
 
         lines = tailored_text.split('\n')
         for line in lines:
-            line = _sanitize(line.strip())
+            line = line.strip()
             if not line:
                 pdf.ln(3)
                 continue
 
             if line.startswith("NAME:"):
-                name = _wrap_long_words(_sanitize(line.replace("NAME:", "").strip()))
                 pdf.set_font("Helvetica", "B", 18)
-                pdf.multi_cell(pw, 10, name, align="C")
+                pdf.multi_cell(pw, 10, _sanitize(line.replace("NAME:", "").strip()), align="C")
+                pdf.ln(2)
             elif any(line.startswith(h) for h in ["SUMMARY:", "SKILLS:", "EXPERIENCE:", "EDUCATION:", "CERTIFICATIONS:"]):
-                pdf.ln(3)
-                pdf.set_font("Helvetica", "B", 12)
+                pdf.ln(2)
                 parts = line.split(":", 1)
-                pdf.multi_cell(pw, 8, _sanitize(parts[0]) + ":")
+                label = _sanitize(parts[0]) + ":"
                 if len(parts) > 1 and parts[1].strip():
+                    body = "  " + _sanitize(parts[1].strip())
+                    pdf.set_font("Helvetica", "B", 13)
+                    w = pdf.get_string_width(label)
+                    pdf.cell(w + 1, 7, label)
                     pdf.set_font("Helvetica", "", 10)
-                    pdf.multi_cell(pw, 5, parts[1].strip())
+                    x0 = pdf.get_x()
+                    pdf.multi_cell(pw - (x0 - margin), lh, body)
+                else:
+                    pdf.set_font("Helvetica", "B", 13)
+                    pdf.multi_cell(pw, 7, label)
+                pdf.ln(2)
             elif line.startswith("- ") or line.startswith("• "):
                 pdf.set_font("Helvetica", "", 10)
-                pdf.cell(5, 5, "")
-                pdf.multi_cell(pw - 5, 5, "  " + _wrap_long_words(line[2:].strip()))
+                text = "  • " + _sanitize(line.lstrip("-• ").strip())
+                pdf.multi_cell(pw, lh, text)
             else:
                 pdf.set_font("Helvetica", "", 10)
-                pdf.multi_cell(pw, 5, _wrap_long_words(line))
+                pdf.multi_cell(pw, lh, _sanitize(line))
 
         buf = io.BytesIO()
         buf.write(pdf.output())
@@ -417,11 +960,18 @@ def generate_questions_ai(job):
 Description: {job.get('description','')[:2000]}
 Requirements: {job.get('requirements','')[:1000]}
 
-Generate 8 interview questions. Mix: 3-4 technical, 2-3 behavioral, 1-2 scenario.
-Return as numbered list. Make them role-specific."""
-    result = call_deepseek(prompt, "You are a senior hiring manager. Be specific and challenging.")
+Generate 8 interview questions. Prioritize behavioral and situational (5-6), with only 2-3 technical. Make them specific to this role and company. Return as numbered list. Do NOT repeat the question number in the question text."""
+    result = call_deepseek(prompt, "You are a senior hiring manager focused on behavioral and culture-fit assessment. Be specific and challenging.")
     if result:
-        return [q.strip() for q in result.split('\n') if q.strip() and any(q.strip().startswith(str(i)) for i in range(1,15))][:10]
+        qs = []
+        for line in result.split('\n'):
+            line = line.strip()
+            if not line:
+                continue
+            cleaned = re.sub(r'^\d+[\.\)\-]+\s*', '', line)
+            if cleaned and len(cleaned) > 10:
+                qs.append(cleaned)
+        return qs[:10]
     return None
 
 
@@ -429,31 +979,42 @@ def generate_questions_simple(job):
     desc = (job.get('description', '') + ' ' + job.get('requirements', '')).lower()
     title = job.get('title', '').lower()
     qs = []
+    # 1-2 light tech questions phrased as behavioral
     tech_map = {
-        'python': "Explain Python decorators and a use case.",
-        'javascript': "Explain closures with an example and the event loop.",
-        'java': "HashMap vs ConcurrentHashMap? Explain JVM GC.",
-        'sql': "Explain JOIN types. How would you optimize a slow query?",
-        'aws': "EC2 vs Lambda: when to use which? Explain VPC.",
-        'docker': "Docker vs VM key differences? Multi-stage builds?",
-        'react': "Explain virtual DOM. useEffect vs useLayoutEffect?",
-        'data': "Explain ETL pipeline design. Star vs snowflake schema?",
-        'api': "REST vs GraphQL? How do you handle API rate limiting?",
-        'cloud': "Explain microservices. CI/CD pipeline design?",
+        'python': "Walk me through how you'd debug a performance issue in a Python service.",
+        'javascript': "Describe a time you had to optimize a slow web application.",
+        'java': "Tell me about a complex system you built in Java and the trade-offs you made.",
+        'sql': "Describe how you'd investigate a slow database query in production.",
+        'aws': "Tell me about a time you designed or migrated a cloud architecture.",
+        'docker': "Walk me through how you set up CI/CD for a containerized app.",
+        'react': "Describe a challenging UI problem you solved and your approach.",
+        'data': "Tell me about a time your data analysis changed a business decision.",
+        'api': "Describe how you designed an API and handled versioning or breaking changes.",
+        'cloud': "Tell me about a system you scaled and the bottlenecks you hit.",
     }
     for kw, q in tech_map.items():
-        if kw in desc and len(qs) < 4:
+        if kw in desc and len(qs) < 2:
             qs.append(q)
+    # Behavioral questions (majority)
     behavioral = [
-        "Tell me about yourself and your background.",
-        "Why are you interested in this role?",
-        "Describe a challenging project and how you solved it.",
-        "How do you handle disagreement with a coworker?",
+        "Tell me about yourself and your background — focus on what brought you to this field.",
+        "Why are you interested in this role and this company specifically?",
+        "Describe the most challenging project you worked on. What made it hard and how did you overcome it?",
+        "Tell me about a time you disagreed with a coworker or manager. How did you handle it?",
+        "Describe a situation where you had to learn something completely new on the job.",
+        "Tell me about a time you failed or made a mistake. What happened and what did you learn?",
+        "How do you prioritize when you have multiple competing deadlines?",
+        "Describe a time you had to influence a team or stakeholder without formal authority.",
     ]
     qs.extend(behavioral)
     if 'senior' in title or 'lead' in title:
-        qs.append("How do you mentor junior team members?")
-    return qs[:8]
+        qs.extend([
+            "Tell me about a time you had to manage an underperforming team member.",
+            "How do you balance hands-on technical work with leadership responsibilities?",
+        ])
+    if 'manager' in title or 'lead' in title:
+        qs.append("Describe your approach to building and scaling a high-performing team.")
+    return qs[:10]
 
 
 def evaluate_answer(question, answer):
@@ -471,20 +1032,26 @@ def main():
     st.title("🎯 Job Scraper + Resume Tailor + Mock Interview")
     st.caption("Scrapes LinkedIn jobs in Singapore (last 2 weeks) | Powered by DeepSeek")
 
-    # Keyboard navigation JS
+    # Keyboard navigation — left/right arrow keys to browse jobs
     st.markdown("""
     <script>
-    document.addEventListener('keydown', function(e) {
-        if (e.key === 'ArrowLeft') {
-            var btn = parent.document.querySelector('button[kind="secondary"][data-testid="stBaseButton-secondary"]');
-            var btns = parent.document.querySelectorAll('button');
-            for (var b of btns) { if (b.innerText.includes('◀')) b.click(); }
+    (function() {
+        function clickBtn(text) {
+            var btns = window.parent.document.querySelectorAll('button');
+            for (var i = 0; i < btns.length; i++) {
+                if (btns[i].innerText && btns[i].innerText.indexOf(text) !== -1) {
+                    btns[i].click();
+                    return true;
+                }
+            }
+            return false;
         }
-        if (e.key === 'ArrowRight') {
-            var btns = parent.document.querySelectorAll('button');
-            for (var b of btns) { if (b.innerText.includes('▶')) b.click(); }
-        }
-    });
+        document.addEventListener('keydown', function(e) {
+            if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            if (e.key === 'ArrowLeft') { clickBtn('\u25c0'); e.preventDefault(); }
+            if (e.key === 'ArrowRight') { clickBtn('\u25b6'); e.preventDefault(); }
+        });
+    })();
     </script>
     """, unsafe_allow_html=True)
 
@@ -492,9 +1059,34 @@ def main():
     with st.sidebar:
         st.header("⚙️ Settings")
         kw = st.text_input("Job title / keywords", placeholder="e.g. software engineer")
+        company_filter = st.text_input("Company (optional)", placeholder="e.g. Google, Shopee")
         max_jobs = st.slider("Max jobs", 10, 50, 25)
         st.divider()
 
+        st.subheader("📋 Custom Job")
+        with st.expander("Paste a job for analysis", expanded=False):
+            custom_url = st.text_input("LinkedIn job URL", placeholder="https://www.linkedin.com/jobs/view/...", key="custom_url")
+            custom_desc = st.text_area("Or paste job description", placeholder="Paste the full job posting here...", height=120, key="custom_desc")
+            if st.button("🔍 Analyze This Job", use_container_width=True, key="custom_btn"):
+                if custom_url:
+                    with st.spinner("Fetching job..."):
+                        desc, reqs = get_job_details(custom_url)
+                        if desc:
+                            st.session_state.custom_job = {"title": "Custom Job", "company": "Unknown", "url": custom_url, "description": desc, "requirements": reqs, "mode": detect_mode(desc), "logo": "", "date_posted": "", "source": "custom"}
+                            st.session_state.jobs = [st.session_state.custom_job]
+                            st.session_state.job_idx = 0
+                            st.session_state.glassdoor_cache = {}
+                            st.rerun()
+                        else:
+                            st.error("Could not fetch job — site may block datacenter IPs.")
+                elif custom_desc.strip():
+                    st.session_state.custom_job = {"title": "Custom Job", "company": "Unknown", "url": "", "description": custom_desc, "requirements": extract_requirements(custom_desc), "mode": detect_mode(custom_desc), "logo": "", "date_posted": "", "source": "custom"}
+                    st.session_state.jobs = [st.session_state.custom_job]
+                    st.session_state.job_idx = 0
+                    st.session_state.glassdoor_cache = {}
+                    st.rerun()
+
+        st.divider()
         st.subheader("📄 Resume")
         resume_file = st.file_uploader("Upload (PDF/DOCX/DOC/TXT)", type=["pdf", "docx", "doc", "txt", "md"])
         if resume_file:
@@ -518,17 +1110,24 @@ def main():
             st.session_state.use_ai_tailor = False
             st.session_state.use_ai_questions = False
 
-    if not kw:
-        st.info("👈 Enter a job title in the sidebar to start")
+    if not kw and not company_filter.strip() and not st.session_state.get("custom_job"):
+        st.info("👈 Enter a job title or company in the sidebar to start")
         return
 
-    if st.button("🔍 Search LinkedIn", type="primary", use_container_width=True):
-        st.session_state.jobs = None
-        st.session_state.job_idx = 0
-        st.session_state.glassdoor_cache = {}
-        with st.spinner(f"Searching '{kw}'..."):
-            st.session_state.jobs = scrape_linkedin(kw, max_jobs)
-        st.rerun()
+    # Build search query with company filter
+    search_query = kw
+    if company_filter.strip():
+        search_query = f"{kw} {company_filter.strip()}" if kw else company_filter.strip()
+
+    if kw or company_filter.strip():
+        if st.button("🔍 Find Jobs", type="primary", use_container_width=True):
+            st.session_state.jobs = None
+            st.session_state.job_idx = 0
+            st.session_state.glassdoor_cache = {}
+            st.session_state.custom_job = None
+            with st.spinner(f"Searching for '{search_query}'..."):
+                st.session_state.jobs = scrape_linkedin(search_query, max_jobs)
+            st.rerun()
 
     if "jobs" not in st.session_state or not st.session_state.jobs:
         return
@@ -558,31 +1157,44 @@ def main():
 
     # ── Job Card ──
     st.divider()
-    col1, col2 = st.columns([3, 1])
-    with col1:
+    info_col, link_col = st.columns([6, 1.4])
+    with info_col:
         st.markdown(f"## {job['title']}")
-        st.markdown(f"**{job['company']}**  ·  {job['mode']}")
-    with col2:
-        st.link_button("🔗 LinkedIn", job['url'])
+        meta_parts = [f"**{job['company']}**", job.get('mode', '')]
+        if job.get("date_posted"):
+            meta_parts.append(f"🕒 {job['date_posted']}")
+        src = job.get("source", "")
+        if src:
+            meta_parts.append(f"via {src.title()}")
+        st.markdown("  ·  ".join(p for p in meta_parts if p))
+    with link_col:
+        if job.get("url"):
+            st.link_button("🔗 Open on LinkedIn", job['url'])
 
     # ── Tabs ──
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Details", "📄 Tailor Resume", "❓ Questions", "🎤 Mock Interview"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 Details", "📄 Tailor Resume", "❓ Questions", "🎤 Mock Interview", "💬 Ask Them"])
 
     with tab1:
         st.subheader("Description")
-        st.markdown((job.get('description') or '*No description*')[:3000])
+        desc_text = job.get('description') or '*No description*'
+        st.markdown(desc_text[:5000], unsafe_allow_html=True)
         if job.get('requirements'):
             st.subheader("Requirements")
             st.markdown(job['requirements'][:2000])
 
         # ── Glassdoor Panel ──
-        with st.expander("🏢 Glassdoor Info", expanded=False):
+        with st.expander("🏢 Company Info", expanded=False):
             if "glassdoor_cache" not in st.session_state:
                 st.session_state.glassdoor_cache = {}
             company = job['company']
             if company not in st.session_state.glassdoor_cache:
                 with st.spinner(f"Looking up {company} on Glassdoor..."):
                     gd = lookup_glassdoor(company)
+                    if gd and gd.get("error") and DEEPSEEK_KEY:
+                        # Glassdoor blocked — try AI guess
+                        ai = guess_company_info(company, job.get("title", ""))
+                        if ai:
+                            gd = ai
                     st.session_state.glassdoor_cache[company] = gd
             gd = st.session_state.glassdoor_cache.get(company)
             if gd and gd.get("error"):
@@ -592,17 +1204,21 @@ def main():
                 with c1:
                     if gd.get("rating"):
                         stars = "★" * int(gd["rating"]) + "☆" * (5 - int(gd["rating"]))
-                        st.metric("Glassdoor Rating", f"{gd['rating']:.1f} / 5")
+                        label = "AI Est. Rating" if gd.get("ai_guess") else "Glassdoor Rating"
+                        st.metric(label, f"{gd['rating']:.1f} / 5")
                         st.caption(stars)
                     else:
                         st.caption("No rating found")
                 with c2:
                     if gd.get("salary"):
-                        st.metric("Est. Salary", gd["salary"])
+                        label = "AI Est. Monthly" if gd.get("ai_guess") else "Est. Monthly Salary"
+                        st.metric(label, gd["salary"])
                     else:
                         st.caption("No salary data")
+                if gd.get("ai_guess"):
+                    st.caption("⚠️ AI-generated estimate — not from Glassdoor")
             else:
-                st.caption("No Glassdoor data found for this company")
+                st.caption("No company data found")
 
     with tab2:
         st.subheader("Resume Tailoring")
@@ -686,7 +1302,8 @@ def main():
 
         if "interview_qs" in st.session_state and st.session_state.interview_qs:
             for i, q in enumerate(st.session_state.interview_qs, 1):
-                st.markdown(f"**{i}.** {q}")
+                qtext = re.sub(r'^\d+[\.\)\-]+\s*', '', q)
+                st.markdown(f"{i}. {qtext}")
 
     with tab4:
         st.subheader("Mock Interview")
@@ -710,7 +1327,9 @@ def main():
                     st.rerun()
             else:
                 st.progress(midx / len(qs), f"Question {midx+1}/{len(qs)}")
-                st.markdown(f"### Q{midx+1}: {qs[midx]}")
+                # Strip any leading number prefix from question text (AI might still add one)
+                qtext = re.sub(r'^\d+[\.\)\-]+\s*', '', qs[midx])
+                st.markdown(f"##### Q{midx+1}: {qtext}")
                 answer = st.text_area("Your answer:", key=f"ans_{midx}", height=120)
 
                 c1, c2 = st.columns(2)
@@ -729,6 +1348,50 @@ def main():
                         st.session_state.mock_feedback.append("*Skipped*")
                         st.session_state.mock_idx += 1
                         st.rerun()
+
+    with tab5:
+        st.subheader("Questions to Ask the Interviewer")
+        st.caption("Asking good questions shows preparation and interest. Pick 2-3 that matter most to you.")
+
+        candidate_qs = [
+            "What does a typical day or week look like in this role?",
+            "How do you measure success for this position in the first 3-6 months?",
+            "What are the biggest challenges the team is facing right now?",
+            "How would you describe the team culture and working style?",
+            "What opportunities for growth and learning does this role offer?",
+            "How does the team handle technical decisions and disagreements?",
+            "What's the onboarding process like for new team members?",
+            "How does the company support work-life balance?",
+            "Where do you see the company/team in the next 1-2 years?",
+            "What do you enjoy most about working here?",
+        ]
+        # Add role-specific questions
+        title = job.get('title', '').lower()
+        if 'senior' in title or 'lead' in title:
+            candidate_qs.append("What's your approach to technical leadership and mentoring on the team?")
+        if 'manager' in title:
+            candidate_qs.append("What's the team size and structure? How are reports distributed?")
+        if 'engineer' in title or 'developer' in title:
+            candidate_qs.append("What does the tech stack look like and how do you manage technical debt?")
+
+        for i, q in enumerate(candidate_qs, 1):
+            st.markdown(f"{i}. {q}")
+
+        if DEEPSEEK_KEY:
+            st.divider()
+            if st.button("🤖 Generate Role-Specific Questions", key="gen_ask_them"):
+                with st.spinner("Generating..."):
+                    prompt = f"""Job: {job['title']} at {job['company']}
+Description: {job.get('description','')[:1500]}
+
+Generate 5 smart questions a candidate should ask the interviewer for this specific role and company. Make them thoughtful and specific. Return as numbered list."""
+                    result = call_deepseek(prompt, "You are an experienced career coach helping candidates prepare for interviews.", max_tokens=300)
+                    if result:
+                        st.session_state.ask_them_qs = result
+                        st.rerun()
+            if "ask_them_qs" in st.session_state and st.session_state.ask_them_qs:
+                st.markdown("##### AI-Generated Questions")
+                st.markdown(st.session_state.ask_them_qs)
 
 
 if __name__ == "__main__":
