@@ -19,13 +19,14 @@ st.set_page_config(page_title="Job Scraper", page_icon="🎯", layout="wide")
 # Hide Streamlit branding
 st.markdown("""
 <style>
-header, footer, [data-testid="stFooter"],
+header > div:first-child, header [data-testid="stToolbar"], footer, [data-testid="stFooter"],
 .viewerBadge_container__1QSob,
 a[href*="/creators/"], a[href*="github"],
 iframe[src*="github"], div:has(> a[href*="github"])
 {display:none !important;}
 
-/* Always show sidebar expand arrow, even when header is hidden */
+/* Invisible header — needed so collapsedControl renders */
+header { height: 0 !important; min-height: 0 !important; overflow: visible !important; background: transparent !important; }
 [data-testid="collapsedControl"] {
     display: flex !important;
     position: fixed;
