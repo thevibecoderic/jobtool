@@ -731,6 +731,7 @@ def get_job_details(job_url):
                         pass
         except:
             continue
+    return "", ""
 
 
 def extract_requirements(text):
