@@ -60,53 +60,55 @@ def main():
     # ── Sidebar ──
     with st.sidebar:
         st.header("⚙️ Settings")
-        kw = st.text_input("Job title / keywords", placeholder="e.g. software engineer")
-        company_filter = st.text_input("Company (optional)", placeholder="e.g. Google, Shopee")
-        mode_filter = st.multiselect("Work mode filter", ["🏠 Remote", "🏢🏠 Hybrid", "🏢 In-office"], default=[])
-        max_jobs = st.slider("Max jobs", 10, 50, 25)
-        if st.button("🔍 Find Jobs", type="primary", use_container_width=True):
-            st.session_state.job_idx = 0
-            st.session_state.glassdoor_cache = {}
-            st.session_state.custom_job = None
-            search = kw
-            if company_filter.strip():
-                search = f"{kw} {company_filter.strip()}" if kw else company_filter.strip()
-            with st.spinner(f"Searching for '{search}'..."):
-                st.session_state.jobs = scrape_linkedin(search, max_jobs)
-            st.rerun()
+        with st.form("search_form"):
+            kw = st.text_input("Job title / keywords", placeholder="e.g. software engineer")
+            company_filter = st.text_input("Company (optional)", placeholder="e.g. Google, Shopee")
+            mode_filter = st.multiselect("Work mode filter", ["🏠 Remote", "🏢🏠 Hybrid", "🏢 In-office"], default=[])
+            max_jobs = st.slider("Max jobs", 10, 50, 25)
+            if st.form_submit_button("🔍 Find Jobs", type="primary", use_container_width=True):
+                st.session_state.job_idx = 0
+                st.session_state.glassdoor_cache = {}
+                st.session_state.custom_job = None
+                search = kw
+                if company_filter.strip():
+                    search = f"{kw} {company_filter.strip()}" if kw else company_filter.strip()
+                with st.spinner(f"Searching for '{search}'..."):
+                    st.session_state.jobs = scrape_linkedin(search, max_jobs)
+                st.rerun()
         st.divider()
 
         st.subheader("📋 Custom Job")
         with st.expander("Paste a job for analysis", expanded=False):
-            custom_url = st.text_input("LinkedIn job URL", placeholder="https://www.linkedin.com/jobs/view/...", key="custom_url")
-            custom_desc = st.text_area("Or paste job description", placeholder="Paste the full job posting here...", height=120, key="custom_desc")
-            if st.button("🔍 Analyze This Job", use_container_width=True, key="custom_btn"):
-                if custom_url:
-                    with st.spinner("Fetching job..."):
-                        desc, reqs = get_job_details(custom_url)
-                        if desc:
-                            st.session_state.custom_job = {
-                                "title": extract_title(desc), "company": extract_company(desc),
-                                "url": custom_url, "description": desc, "requirements": reqs,
-                                "mode": detect_mode(desc), "date_posted": "", "source": "custom"
-                            }
-                            st.session_state.jobs = [st.session_state.custom_job]
-                            st.session_state.job_idx = 0
-                            st.session_state.glassdoor_cache = {}
-                            st.rerun()
-                        else:
-                            st.error("Could not fetch job — site may block datacenter IPs.")
-                elif custom_desc.strip():
-                    st.session_state.custom_job = {
-                        "title": extract_title(custom_desc), "company": extract_company(custom_desc),
-                        "url": "", "description": custom_desc,
-                        "requirements": extract_requirements(custom_desc),
-                        "mode": detect_mode(custom_desc), "date_posted": "", "source": "custom"
-                    }
-                    st.session_state.jobs = [st.session_state.custom_job]
-                    st.session_state.job_idx = 0
-                    st.session_state.glassdoor_cache = {}
-                    st.rerun()
+            with st.form("custom_job_form"):
+                custom_url = st.text_input("LinkedIn job URL", placeholder="https://www.linkedin.com/jobs/view/...", key="custom_url")
+                custom_desc = st.text_area("Or paste job description", placeholder="Paste the full job posting here...", height=120, key="custom_desc")
+                if st.form_submit_button("🔍 Analyze This Job", use_container_width=True, key="custom_btn"):
+                    if custom_url:
+                        with st.spinner("Fetching job..."):
+                            desc, reqs = get_job_details(custom_url)
+                            if desc:
+                                st.session_state.custom_job = {
+                                    "title": extract_title(desc), "company": extract_company(desc),
+                                    "url": custom_url, "description": desc, "requirements": reqs,
+                                    "mode": detect_mode(desc), "date_posted": "", "source": "custom"
+                                }
+                                st.session_state.jobs = [st.session_state.custom_job]
+                                st.session_state.job_idx = 0
+                                st.session_state.glassdoor_cache = {}
+                                st.rerun()
+                            else:
+                                st.error("Could not fetch job — site may block datacenter IPs.")
+                    elif custom_desc.strip():
+                        st.session_state.custom_job = {
+                            "title": extract_title(custom_desc), "company": extract_company(custom_desc),
+                            "url": "", "description": custom_desc,
+                            "requirements": extract_requirements(custom_desc),
+                            "mode": detect_mode(custom_desc), "date_posted": "", "source": "custom"
+                        }
+                        st.session_state.jobs = [st.session_state.custom_job]
+                        st.session_state.job_idx = 0
+                        st.session_state.glassdoor_cache = {}
+                        st.rerun()
 
         st.divider()
         st.subheader("📄 Resume")
