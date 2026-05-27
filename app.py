@@ -204,11 +204,6 @@ def main():
 
     job = jobs[idx]
 
-    # Glassdoor cache
-    if "glassdoor_cache" not in st.session_state:
-        st.session_state.glassdoor_cache = {}
-    gd = st.session_state.glassdoor_cache.get(job["company"])
-
     # Scroll anchor
     st.markdown('<div id="job-top"></div>', unsafe_allow_html=True)
     st.markdown("""
@@ -236,12 +231,6 @@ def main():
     with info_col:
         st.markdown(f"## {re.sub(r'([#*_`~\\[\\]<>])', lambda m: '\\' + m.group(1), job['title'])}")
         card_meta = [f"**{job['company']}**"]
-        if gd and gd.get("rating"):
-            stars = "★" * int(gd["rating"]) + "☆" * (5 - int(gd["rating"]))
-            ai_label = " (AI est.)" if gd.get("ai_guess") else ""
-            card_meta.append(f"{stars} {gd['rating']:.1f}{ai_label}")
-        if gd and gd.get("salary"):
-            card_meta.append(f"💰 {gd['salary']}")
         card_meta.append(job.get('mode', ''))
         if job.get("date_posted"):
             card_meta.append(f"🕒 {job['date_posted']}")
@@ -301,7 +290,7 @@ def main():
 
         # Company Info Panel
         with st.expander("🏢 Company Info", expanded=False):
-            company_key = job["company"]
+            company_key = f"{job['company']}||{job.get('title','')}"
             gd2 = st.session_state.glassdoor_cache.get(company_key)
             jd_salary = extract_salary_from_jd(job.get("description", "") + " " + job.get("requirements", ""))
             if jd_salary:
