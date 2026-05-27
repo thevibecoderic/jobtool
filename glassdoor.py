@@ -59,7 +59,7 @@ def lookup_glassdoor(company_name):
                 return {"rating": rating, "salary": salary}
         except:
             continue
-    return {"error": "Lookup blocked (datacenter IP rejected by search engines)."}
+    return {"error": "Falling back to AI search (Glassdoor unreachable)."}
 
 
 def _to_monthly(salary_str):

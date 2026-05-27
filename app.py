@@ -299,9 +299,9 @@ def main():
             if gd2 and gd2.get("error"):
                 st.caption(gd2["error"])
                 if DEEPSEEK_KEY:
-                    if st.button("🤖 Estimate Salary (AI)", key=f"gd_ai_{company_key}_{idx}"):
+                    if st.button("🤖 Fallback to AI search", key=f"gd_ai_{company_key}_{idx}"):
                         with st.spinner("Estimating..."):
-                            ai = guess_company_info(company_key, job.get("title", ""), job.get("description", ""))
+                            ai = guess_company_info(job["company"], job.get("title", ""), job.get("description", ""))
                             if ai:
                                 st.session_state.glassdoor_cache[company_key] = ai
                                 st.rerun()
@@ -321,9 +321,9 @@ def main():
             else:
                 if st.button("🔍 Lookup Company", key=f"gd_lookup_{company_key}_{idx}"):
                     with st.spinner("Searching Glassdoor..."):
-                        gd_result = lookup_glassdoor(company_key)
+                        gd_result = lookup_glassdoor(job["company"])
                         if gd_result and gd_result.get("error") and DEEPSEEK_KEY:
-                            ai = guess_company_info(company_key, job.get("title", ""), job.get("description", ""))
+                            ai = guess_company_info(job["company"], job.get("title", ""), job.get("description", ""))
                             if ai:
                                 gd_result = ai
                         st.session_state.glassdoor_cache[company_key] = gd_result
