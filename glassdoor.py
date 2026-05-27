@@ -94,17 +94,18 @@ Role: {job_title}
 Location: Singapore
 Job Description: {jd_text[:2000]}
 
-Based on the company, role, and job description above, estimate:
-1. Company rating out of 5 (based on general reputation)
-2. Estimated MONTHLY salary range in SGD for this specific role (e.g. "SGD 5,000 - 8,000/mo")
-Factor in the seniority level, skills required, and responsibilities from the JD.
+Estimate for this specific role in Singapore:
+1. Company rating out of 5 (based on reputation, size, industry standing)
+2. Monthly salary RANGE in SGD (e.g. "SGD 5,000 - 8,000/mo")
+3. A 2-3 sentence justification explaining what drives this range
 
-Format your answer exactly like this:
+Factor in: seniority implied by the JD, YOE required, skills scarcity, company tier, and current Singapore tech market rates.
+
+Format exactly:
 Rating: X.X/5
 Salary: SGD X,XXX - X,XXX/mo
-
-If you're unsure, give your best estimate and note the uncertainty."""
-    result = call_deepseek(prompt, "You are a compensation analyst with knowledge of Singapore tech salaries. Always return MONTHLY salary.", max_tokens=150)
+Why: <your 2-3 sentence justification here>"""
+    result = call_deepseek(prompt, "You are a compensation analyst with deep knowledge of Singapore tech salaries. Always return MONTHLY salary range. Be specific in your justification — cite concrete factors like YOE, skill demand, company tier.", max_tokens=250)
     if not result:
         return None
     info = {}
@@ -123,6 +124,9 @@ If you're unsure, give your best estimate and note the uncertainty."""
         if m:
             sl = m.group(1).strip()
             info["salary"] = sl if sl.endswith("/mo") else sl + "/mo"
+    m = re.search(r'Why:\s*(.+?)(?:\n|$)', result, re.I)
+    if m:
+        info["why"] = m.group(1).strip()
     if info:
         info["ai_guess"] = True
     return info if info else None

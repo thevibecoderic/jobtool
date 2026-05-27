@@ -131,6 +131,9 @@ def main():
             st.session_state.use_ai_tailor = False
             st.session_state.use_ai_questions = False
 
+        st.divider()
+        st.markdown("☕ **[Buy me a coffee](https://wise.com/pay/me/yourname)** — support this tool!", unsafe_allow_html=True)
+
     # ── Early exit if no search ──
     if not kw and not company_filter.strip() and not st.session_state.get("custom_job"):
         st.divider()
@@ -320,6 +323,8 @@ def main():
                 if gd2.get("salary"):
                     label = "AI Est. Monthly" if gd2.get("ai_guess") else "Est. Monthly Salary"
                     st.metric(label, gd2["salary"])
+                    if gd2.get("why"):
+                        st.caption(gd2["why"])
                 if gd2.get("ai_guess"):
                     st.caption("⚠️ AI-generated — not from Glassdoor")
             else:
