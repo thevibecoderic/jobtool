@@ -132,7 +132,7 @@ def main():
             st.session_state.use_ai_questions = False
 
         st.divider()
-        st.markdown("☕ **[Buy me a coffee](https://wise.com/pay/me/yourname)** — support this tool!", unsafe_allow_html=True)
+        st.markdown("☕ **[Buy me a coffee](https://wise.com/pay/r/nja3Nh12pdxFgFw)** — support this tool!", unsafe_allow_html=True)
 
     # ── Early exit if no search ──
     if not kw and not company_filter.strip() and not st.session_state.get("custom_job"):
