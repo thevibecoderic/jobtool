@@ -97,8 +97,8 @@ def generate_tailored_resume(resume, job):
 
     prompt = f"""Job Title: {job['title']}
 Company: {job['company']}
-Job Description: {job.get('description','')[:2000]}
-Requirements: {job.get('requirements','')[:1000]}
+Job Description: {job.get('description','')[:3000]}
+Requirements: {job.get('requirements','')[:1500]}
 
 My current resume:
 {resume[:3000]}
@@ -108,16 +108,19 @@ Rewrite my resume for this job. Rules:
 - Keep my real job titles, dates, and company names exactly as-is
 - Use UK English spelling throughout: -ise not -ize, -our not -or, -re not -er, "travelling" not "traveling"
 - Use strong action verbs (e.g. "Led", "Designed", "Built", "Optimised")
-- Write like a human: "I built the API" not "Spearheaded the development of a RESTful API"
+- Favour keyword-rich, technical language over conversational tone — this resume must beat ATS filters. "Spearheaded RESTful API development with CI/CD pipelines" beats "I built the API"
 - Avoid semicolons and run-on sentences — keep each bullet to one clear idea
 - Keep bullets concise — one line each when possible
-- Weave ATS keywords from the job description naturally, using the employer's exact terminology (e.g. "CI/CD pipelines" not "deployment automation"), but apply UK spelling to all other words
+- AGGRESSIVELY pack ATS keywords from the job description — use the employer's exact terminology (e.g. "stakeholder management", "CI/CD pipelines", "cross-functional collaboration"). Apply UK spelling to non-technical words only.
+- Front-load the highest-value JD keywords in the first 2-3 lines of SUMMARY and the first line of SKILLS
+- In EXPERIENCE, rewrite every bullet to surface at least one JD keyword where truthful
+- If a JD keyword matches your background but isn't currently on your resume, add it in a truthful context
 Include ONLY these sections in this exact order:
 
 {chr(10).join(sections)}
 
-IMPORTANT: Place the most relevant keywords early in SUMMARY and SKILLS. Return the full rewritten resume with those exact headers."""
-    return call_deepseek(prompt, "You are an expert resume writer. Use UK English spelling throughout (-ise not -ize, -our not -or, -re not -er). Use strong professional action verbs. Avoid semicolons and run-on sentences. Weave ATS keywords naturally. NEVER add anything not in the original resume.", max_tokens=1500)
+CRITICAL TARGET: 80-85% keyword match with the job description. Pack every relevant JD keyword into this resume. Front-load SUMMARY and SKILLS aggressively. Return the full rewritten resume with those exact headers."""
+    return call_deepseek(prompt, "You are an expert ATS-optimisation resume writer. PRIMARY GOAL: 80-85% keyword match with the job description. Pack every relevant JD keyword into the resume — prioritise keyword density over conversational flow. Front-load SUMMARY and SKILLS with high-value terms. Surface JD keywords in every EXPERIENCE bullet where truthful. Use UK English spelling (-ise, -our, -re). Use the employer's exact technical terminology. NEVER invent experience.", max_tokens=1500)
 
 
 def _replace_para_text(para, new_text):
